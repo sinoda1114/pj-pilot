@@ -151,6 +151,30 @@ describe("dependencies/service", () => {
         ValidationError,
       );
     });
+
+    it("トランザクション: 並行して作成しても循環参照は成立しない（Amazon Q レビュー指摘の TOCTOU 対策の検証）", async () => {
+      const a = await insertTask("A");
+      const b = await insertTask("B");
+      const c = await insertTask("C");
+      // 既存: A→B。ここに並行して B→C と C→A を追加しようとすると、
+      // どちらも「相手がまだ見えていない」状態で検証が通ってしまい、
+      // 両方コミットされれば A→B→C→A の循環になってしまう。
+      await createDependency(handle.db, SESSION, projectId, a.id, b.id);
+
+      const results = await Promise.allSettled([
+        createDependency(handle.db, SESSION, projectId, b.id, c.id),
+        createDependency(handle.db, SESSION, projectId, c.id, a.id),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === "fulfilled");
+      const rejected = results.filter((r) => r.status === "rejected");
+      // どちらか一方だけが成功し、もう一方は循環参照として拒否されるはず。
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+
+      const finalDependencies = await listDependencies(handle.db, SESSION, projectId);
+      expect(finalDependencies).toHaveLength(2);
+    });
   });
 
   describe("listDependencies", () => {

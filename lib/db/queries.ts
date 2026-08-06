@@ -5,16 +5,25 @@
  * 画面や Server Action・service 層は素の `db.select()` をここ以外に書かず、必ずこのファイルを通す。
  */
 
+import type { ResultSet } from "@libsql/client";
 import { and, eq, isNull } from "drizzle-orm";
-import type { LibSQLDatabase } from "drizzle-orm/libsql";
+import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { projects, taskDependencies, tasks } from "./schema";
 import type * as schema from "./schema";
 
-export async function listActiveProjects(db: LibSQLDatabase<typeof schema>) {
+/**
+ * `LibSQLDatabase<typeof schema>` ではなくこの共通の基底型を使うのは、
+ * `db.transaction(async (tx) => ...)` のコールバック引数 `tx` の型が
+ * `LibSQLDatabase` ではなく `SQLiteTransaction`（`batch` を持たない）になるため。
+ * ここで使うクエリはどちらの型にも共通する部分だけなので、両方から呼べるようにする。
+ */
+type Db = BaseSQLiteDatabase<"async", ResultSet, typeof schema>;
+
+export async function listActiveProjects(db: Db) {
   return db.select().from(projects).where(isNull(projects.deletedAt));
 }
 
-export async function getActiveProject(db: LibSQLDatabase<typeof schema>, projectId: string) {
+export async function getActiveProject(db: Db, projectId: string) {
   const [project] = await db
     .select()
     .from(projects)
@@ -24,7 +33,7 @@ export async function getActiveProject(db: LibSQLDatabase<typeof schema>, projec
   return project;
 }
 
-export async function getActiveTask(db: LibSQLDatabase<typeof schema>, taskId: string) {
+export async function getActiveTask(db: Db, taskId: string) {
   const [task] = await db
     .select()
     .from(tasks)
@@ -35,17 +44,17 @@ export async function getActiveTask(db: LibSQLDatabase<typeof schema>, taskId: s
 }
 
 /** 復元時の祖先チェーン走査（§4.4(a)）では削除済みの行も見る必要があるため、生存フィルタをかけない。 */
-export async function getTaskById(db: LibSQLDatabase<typeof schema>, taskId: string) {
+export async function getTaskById(db: Db, taskId: string) {
   const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
 
   return task;
 }
 
-export async function listActiveChildren(db: LibSQLDatabase<typeof schema>, parentId: string) {
+export async function listActiveChildren(db: Db, parentId: string) {
   return db.select().from(tasks).where(and(eq(tasks.parentId, parentId), isNull(tasks.deletedAt)));
 }
 
-export async function listActiveTasksByProject(db: LibSQLDatabase<typeof schema>, projectId: string) {
+export async function listActiveTasksByProject(db: Db, projectId: string) {
   return db
     .select()
     .from(tasks)
@@ -56,9 +65,6 @@ export async function listActiveTasksByProject(db: LibSQLDatabase<typeof schema>
  * `task_dependencies` に `deleted_at` は無い（決定 D-06: タスク削除時も依存レコード自体は残す）。
  * そのため生存フィルタは不要で、単純にプロジェクト単位で全件返す。
  */
-export async function listDependenciesByProject(
-  db: LibSQLDatabase<typeof schema>,
-  projectId: string,
-) {
+export async function listDependenciesByProject(db: Db, projectId: string) {
   return db.select().from(taskDependencies).where(eq(taskDependencies.projectId, projectId));
 }

@@ -31,6 +31,13 @@ export async function listDependencies(
   return listDependenciesByProject(db, projectId);
 }
 
+/**
+ * 検証（重複・循環チェック）から INSERT までをトランザクションでまとめる。
+ * 分けたままだと、検証後・INSERT 前に別のリクエストが依存を追加した場合に
+ * 循環チェックが古い状態に基づいてしまう TOCTOU 競合が起こり得る
+ * （Amazon Q レビュー指摘）。SQLite/libSQL は書き込みトランザクションを
+ * 直列化するため、この一連の処理をトランザクション化すれば防げる。
+ */
 export async function createDependency(
   db: LibSQLDatabase<typeof schema>,
   session: AuthSession | null,
@@ -40,62 +47,64 @@ export async function createDependency(
 ) {
   requireLogin(session);
 
-  const project = await getActiveProject(db, projectId);
-  if (!project) {
-    throw new NotFoundError("プロジェクトが見つかりません");
-  }
-
   if (predecessorId === successorId) {
     throw new ValidationError("タスクは自分自身に依存できません");
   }
 
-  const predecessor = await getActiveTask(db, predecessorId);
-  if (!predecessor) {
-    throw new NotFoundError("先行タスクが見つかりません");
-  }
-  if (predecessor.projectId !== projectId) {
-    throw new ValidationError("先行タスクは同じプロジェクト内である必要があります");
-  }
+  return db.transaction(async (tx) => {
+    const project = await getActiveProject(tx, projectId);
+    if (!project) {
+      throw new NotFoundError("プロジェクトが見つかりません");
+    }
 
-  const successor = await getActiveTask(db, successorId);
-  if (!successor) {
-    throw new NotFoundError("後続タスクが見つかりません");
-  }
-  if (successor.projectId !== projectId) {
-    throw new ValidationError("後続タスクは同じプロジェクト内である必要があります");
-  }
+    const predecessor = await getActiveTask(tx, predecessorId);
+    if (!predecessor) {
+      throw new NotFoundError("先行タスクが見つかりません");
+    }
+    if (predecessor.projectId !== projectId) {
+      throw new ValidationError("先行タスクは同じプロジェクト内である必要があります");
+    }
 
-  const existingDependencies = await listDependenciesByProject(db, projectId);
+    const successor = await getActiveTask(tx, successorId);
+    if (!successor) {
+      throw new NotFoundError("後続タスクが見つかりません");
+    }
+    if (successor.projectId !== projectId) {
+      throw new ValidationError("後続タスクは同じプロジェクト内である必要があります");
+    }
 
-  const alreadyExists = existingDependencies.some(
-    (dep) => dep.predecessorId === predecessorId && dep.successorId === successorId,
-  );
-  if (alreadyExists) {
-    throw new ValidationError("同じ依存が既に存在します");
-  }
+    const existingDependencies = await listDependenciesByProject(tx, projectId);
 
-  const createsCycle = wouldCreateCycle(
-    existingDependencies.map((dep) => ({
-      predecessorId: dep.predecessorId,
-      successorId: dep.successorId,
-    })),
-    predecessorId,
-    successorId,
-  );
-  if (createsCycle) {
-    throw new ValidationError("この依存を追加すると循環参照になります（§5.2）");
-  }
+    const alreadyExists = existingDependencies.some(
+      (dep) => dep.predecessorId === predecessorId && dep.successorId === successorId,
+    );
+    if (alreadyExists) {
+      throw new ValidationError("同じ依存が既に存在します");
+    }
 
-  const [dependency] = await db
-    .insert(taskDependencies)
-    .values({ projectId, predecessorId, successorId })
-    .returning();
+    const createsCycle = wouldCreateCycle(
+      existingDependencies.map((dep) => ({
+        predecessorId: dep.predecessorId,
+        successorId: dep.successorId,
+      })),
+      predecessorId,
+      successorId,
+    );
+    if (createsCycle) {
+      throw new ValidationError("この依存を追加すると循環参照になります（§5.2）");
+    }
 
-  if (!dependency) {
-    throw new Error("依存の作成に失敗しました");
-  }
+    const [dependency] = await tx
+      .insert(taskDependencies)
+      .values({ projectId, predecessorId, successorId })
+      .returning();
 
-  return dependency;
+    if (!dependency) {
+      throw new Error("依存の作成に失敗しました");
+    }
+
+    return dependency;
+  });
 }
 
 /**
