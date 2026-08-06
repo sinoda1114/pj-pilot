@@ -41,3 +41,6 @@ yarn-error.log*
 # os
 .DS_Store
 *.pem
+
+# サブエージェント用の git worktree（並列実装作業で使う一時ディレクトリ）
+.claude/worktrees/

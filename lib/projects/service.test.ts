@@ -35,7 +35,9 @@ describe("projects/service", () => {
 
   describe("createProject", () => {
     it("ログインしていなければ UnauthorizedError を投げる", async () => {
-      await expect(createProject(handle.db, null, { name: "P" })).rejects.toThrow(UnauthorizedError);
+      await expect(createProject(handle.db, null, { name: "P" })).rejects.toThrow(
+        UnauthorizedError,
+      );
     });
 
     it("作成者を role='owner' として project_members に登録する", async () => {

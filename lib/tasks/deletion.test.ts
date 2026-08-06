@@ -227,10 +227,7 @@ describe("tasks/deletion", () => {
       const b = await insertTask({ title: "B", parentId: a.id });
       // 本来 CHECK 制約では防げない多段循環（A→B→A）を直接 SQL で作る。
       await handle.db.update(tasks).set({ parentId: b.id }).where(eq(tasks.id, a.id));
-      await handle.db
-        .update(tasks)
-        .set({ deletedAt: new Date() })
-        .where(eq(tasks.id, a.id));
+      await handle.db.update(tasks).set({ deletedAt: new Date() }).where(eq(tasks.id, a.id));
 
       await expect(restoreTask(handle.db, SESSION, a.id)).resolves.toBeUndefined();
     });

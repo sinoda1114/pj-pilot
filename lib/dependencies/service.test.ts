@@ -179,9 +179,7 @@ describe("dependencies/service", () => {
 
   describe("listDependencies", () => {
     it("ログインしていなければ UnauthorizedError を投げる", async () => {
-      await expect(listDependencies(handle.db, null, projectId)).rejects.toThrow(
-        UnauthorizedError,
-      );
+      await expect(listDependencies(handle.db, null, projectId)).rejects.toThrow(UnauthorizedError);
     });
 
     it("プロジェクトに紐づく依存を返す", async () => {
@@ -230,7 +228,9 @@ describe("dependencies/service", () => {
       const dependency = await createDependency(handle.db, SESSION, projectId, a.id, b.id);
       await deleteDependency(handle.db, SESSION, dependency.id);
 
-      await expect(createDependency(handle.db, SESSION, projectId, a.id, b.id)).resolves.toBeDefined();
+      await expect(
+        createDependency(handle.db, SESSION, projectId, a.id, b.id),
+      ).resolves.toBeDefined();
     });
   });
 });

@@ -238,9 +238,9 @@ describe("tasks/service", () => {
         endDate: "2026-08-05",
       });
 
-      await expect(
-        updateTask(handle.db, SESSION, task.id, { parentId: task.id }),
-      ).rejects.toThrow(ValidationError);
+      await expect(updateTask(handle.db, SESSION, task.id, { parentId: task.id })).rejects.toThrow(
+        ValidationError,
+      );
     });
 
     it("子孫を親にすると循環参照として ValidationError を投げる", async () => {
