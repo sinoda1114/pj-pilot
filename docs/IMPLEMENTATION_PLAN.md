@@ -52,10 +52,14 @@ GitHub Project の作成と Vercel 連携はクラウドセッションから実
 | `drizzle-orm` | 0.45.2 | |
 | `drizzle-kit` | 0.31.10 | |
 | `@libsql/client` | 0.17.4 | |
-| `@auth/drizzle-adapter` | 1.11.3 | |
-| `next-auth` | latest 4.24.15 / **beta 5.0.0-beta.32** | §9 リスク R-1 |
+| `better-auth` | 1.6.26 | peer に `next ^16`・`react ^19`・`drizzle-orm ^0.45.2` を明記。**安定版** |
+| `@better-auth/cli` | 1.4.21 | 認証テーブルの Drizzle スキーマを生成する |
 
 React 19 系で全体を揃えます（Mantine 9 が React 19 を必須にしているため、選択の余地はありません）。
+
+認証は **Better Auth** を採用します（決定 D-04）。`next-auth` は v5 が依然 beta（5.0.0-beta.32）で、
+v4 は App Router との相性が悪いためです。Better Auth は 1.6.26 が安定版で、peer dependencies に
+Next.js 16 / React 19 / drizzle-orm 0.45.2 が明記されており、本件のスタックとそのまま噛み合います。
 
 ### 2.2 SVAR React Gantt の無料版（MIT）とPRO版の境界
 
@@ -130,10 +134,11 @@ app/projects/[id]/gantt/page.tsx        Server Component（データ取得のみ
 Next.js 16 App Router  ── Vercel
   ├─ Server Components   : 一覧・詳細の初期データ取得
   ├─ Server Actions      : 書き込み（タスクCRUD、依存CRUD、日付移動）
-  ├─ Route Handlers      : 認証コールバックのみ（/api/auth/[...nextauth]）
+  ├─ Route Handlers      : 認証（/api/auth/[...all]）とゴミ箱の定期削除（/api/cron/purge-trash）
   └─ Client Components   : Gantt / DataTable / フォーム
 Drizzle ORM ── @libsql/client ── Turso
-Auth.js (next-auth) ── Google OAuth ── @auth/drizzle-adapter
+Better Auth ── Google OAuth ── drizzleAdapter
+Vercel Cron ── /api/cron/purge-trash（日次。30 日超のゴミ箱を物理削除）
 ```
 
 REST の `RestDataProvider` は使わず、**Server Actions を直接呼びます。** 伝播ロジックが
@@ -148,24 +153,32 @@ CRUD 単位に切るより、ユースケース単位（`moveTask`, `linkTasks`�
 - 伝播ロジックは **依存のない純粋関数**（`lib/scheduling/propagate.ts`）として切り出し、
   DB も React も触らせません。ここがテストの主戦場になります。
 - クライアントは楽観更新し、サーバの確定結果で置き換えます（同時編集は要件外なので競合解決は不要）。
+- **`priority` / `status` の DB 値は英字**（`high` / `in_progress` 等）で保持し、**日本語は表示ラベルとしてのみ**
+  持ちます（決定 D-17）。ラベルは `lib/labels.ts` の 1 箇所に集約し、DB 値を直接画面に出しません。
+  語彙を変えたくなってもマイグレーションが不要で、URL のフィルター条件も壊れません。
+- **`deleted_at IS NULL` の絞り込みを書き忘れられない形にします。** 素の `db.select()` を各所で
+  書かず、`lib/db/queries.ts` に「生存タスクのみを返す」問い合わせ関数を用意し、そこを通します。
 
 ---
 
-## 4. データモデル案 ⚠️ 要承認
+## 4. データモデル ⚠️ 要承認
 
-`CLAUDE.md` の規約により、**スキーマはコミット前に承認が必要**です。以下は提案であり、
-マイグレーションはまだ作成していません。
+`CLAUDE.md` の規約により、**スキーマはコミット前に承認が必要**です。以下は §12 の決定 19 件を
+反映した確定案であり、マイグレーションはまだ作成していません。
 
 ### 4.1 テーブル
 
-| テーブル | 用途 |
-|---|---|
-| `users` / `accounts` / `sessions` / `verification_tokens` | Auth.js の Drizzle アダプタ標準スキーマ（改変しない） |
-| `projects` | プロジェクト |
-| `project_members` | PJ メンバーとロール |
-| `tasks` | タスク（WBS 階層を `parent_id` の自己参照で表現） |
-| `task_assignees` | 複数担当者の中間テーブル |
-| `task_dependencies` | 依存関係 |
+| テーブル | 用途 | 生成元 |
+|---|---|---|
+| `user` / `session` / `account` / `verification` | Better Auth の標準スキーマ | **`@better-auth/cli generate` で自動生成。手で書きません** |
+| `projects` | プロジェクト | 手書き |
+| `project_members` | PJ メンバーとロール | 手書き |
+| `tasks` | タスク（WBS 階層を `parent_id` の自己参照で表現） | 手書き |
+| `task_assignees` | 複数担当者の中間テーブル | 手書き |
+| `task_dependencies` | 依存関係 | 手書き |
+
+認証テーブルは Better Auth が単数形（`user` / `session` / `account` / `verification`）を使います。
+Auth.js の複数形とは別物なので、アプリ側テーブルからの FK は `user.id` を参照します。
 
 ### 4.2 定義（Drizzle / SQLite 方言）
 
@@ -175,18 +188,20 @@ projects
   name                      text  NOT NULL
   description               text
   dependency_sync_enabled   integer(boolean)  NOT NULL DEFAULT 1   -- 連動ON/OFF ①PJ単位
+  deleted_at                integer(timestamp)                     -- 論理削除。NULL=生存
   created_at / updated_at   integer(timestamp) NOT NULL
+  INDEX(deleted_at)
 
 project_members
-  project_id  text  FK→projects.id  ON DELETE CASCADE
-  user_id     text  FK→users.id     ON DELETE CASCADE
+  project_id  text  FK→projects.id
+  user_id     text  FK→user.id
   role        text  NOT NULL DEFAULT 'member'   -- 'owner' | 'member'
   PK(project_id, user_id)
 
 tasks
   id               text  PK
-  project_id       text  FK→projects.id  ON DELETE CASCADE   -- INDEX
-  parent_id        text  FK→tasks.id     ON DELETE CASCADE   -- WBS階層。NULL=ルート
+  project_id       text  FK→projects.id  NOT NULL          -- INDEX
+  parent_id        text  FK→tasks.id                       -- WBS階層。NULL=ルート。INDEX
   title            text  NOT NULL
   start_date       text  NOT NULL   -- 'YYYY-MM-DD'
   end_date         text  NOT NULL   -- 'YYYY-MM-DD'（終了日を含む。§9 S-1 で確定）
@@ -194,70 +209,88 @@ tasks
   priority         text  NOT NULL DEFAULT 'medium'  -- 'low'|'medium'|'high'|'urgent'
   status           text  NOT NULL DEFAULT 'todo'    -- 'todo'|'in_progress'|'review'|'done'
   type             text  NOT NULL DEFAULT 'task'    -- 'task'|'summary'|'milestone'
-  estimated_hours  real                          -- 見積工数
-  actual_hours     real                          -- 実績工数
+  estimated_hours  real                          -- 見積工数（時間・小数）
+  actual_hours     real                          -- 実績工数（時間・小数）
   is_pinned        integer(boolean) NOT NULL DEFAULT 0  -- 連動ON/OFF ②タスク単位ピン留め
   sort_order       integer NOT NULL DEFAULT 0
+  deleted_at       integer(timestamp)            -- 論理削除。NULL=生存。INDEX
   created_at / updated_at  integer(timestamp) NOT NULL
+  INDEX(project_id, deleted_at)
 
 task_assignees
-  task_id  text  FK→tasks.id  ON DELETE CASCADE
-  user_id  text  FK→users.id  ON DELETE CASCADE
+  task_id  text  FK→tasks.id
+  user_id  text  FK→user.id
   PK(task_id, user_id)
 
 task_dependencies
   id             text  PK
-  project_id     text  FK→projects.id  ON DELETE CASCADE   -- INDEX
-  predecessor_id text  FK→tasks.id     ON DELETE CASCADE
-  successor_id   text  FK→tasks.id     ON DELETE CASCADE
-  type           text  NOT NULL DEFAULT 'FS'   -- 初版は 'FS' のみ
+  project_id     text  FK→projects.id   -- INDEX
+  predecessor_id text  FK→tasks.id
+  successor_id   text  FK→tasks.id
+  type           text  NOT NULL DEFAULT 'FS'   -- 初版は 'FS' 固定
+  created_at     integer(timestamp) NOT NULL
   UNIQUE(predecessor_id, successor_id)
 ```
+
+`ON DELETE CASCADE` は**意図的に書きません**。理由は §4.4 のとおりです。
 
 ### 4.3 判断の根拠
 
 - **`estimated_hours` / `actual_hours` は初版から入れます**（要件の明示指定。後付けコストの回避）。
+  単位は**時間を小数**で保持します（決定 D-13）。`1.5` = 1 時間 30 分。
 - **ラグ属性は持ちません。** ギャップ維持型の連動により、バー間の隙間が実質ラグとして機能します。
   SVAR の `ILink` には `lag` がありますが、常に未設定で送ります。
-- `type` に `'FS'` カラムを残すのは、将来 SS/FF/SF を足す余地のためです（値は 'FS' 固定）。
+- `type` に `'FS'` カラムを残すのは、将来 SS/FF/SF を足す余地のためです（値は `'FS'` 固定）。
+- `type` の `'milestone'` は**値として許容するが Phase 1 では UI を出しません**（決定 D-12）。
+  後から有効化する際にマイグレーションが不要になります。
 - `sort_order` は同一 `parent_id` 内の表示順です。Gantt の行入れ替えに必要になります。
+- **親（サマリー）タスクの `start_date` / `end_date` / `progress` / `estimated_hours` /
+  `actual_hours` は子から計算した結果を格納します**（決定 D-11）。SVAR に渡す時点で値が必要なため、
+  都度計算ではなく書き込み時に再計算して永続化します。日付は子の min/max、工数は単純合計、
+  進捗は見積工数による加重平均（見積が無い子は均等重み）です。
+- `project_members` は「担当者と権限」を表します。**閲覧は全ログインユーザーに開いている**ため
+  （決定 D-08）、このテーブルは可視性の制御には使いません。`role='owner'` が PJ 削除権限を持ちます
+  （決定 D-15）。
+- **`deleted_at` は `tasks` と `projects` だけに置きます。** `task_dependencies` には置きません
+  （決定 D-06 のとおり依存レコードはタスク削除時もそのまま残すため）。`task_assignees` も同様です。
 
-### 4.4 削除の方針 — DB のカスケードに依存しません ⚠️
+### 4.4 削除の方針（論理削除）
 
-上のスキーマには `ON DELETE CASCADE` を書いていますが、**実際の削除処理はアプリケーション層で
-明示的に行い、DB のカスケードは「多層防御」としてのみ位置づけます。** 理由は 2 つあります。
+削除は**論理削除**とし、30 日後に物理削除します（決定 D-03 / D-05）。
 
-**(a) Turso の HTTP 接続では `PRAGMA foreign_keys = ON` を担保できません。**
+**(a) 論理削除の対象と手順**
 
-libSQL は SQLite と同様に外部キーを既定で無効にしており、有効化には**接続ごとに**
+| 操作 | 挙動 |
+|---|---|
+| タスクの削除 | `deleted_at` に現在時刻を入れる。行は残る |
+| 子を持つタスクの削除 | **既定では拒否**し、UI で選択させる（決定 D-02）:「サブツリーごと削除」＝子孫全部に `deleted_at` を入れる／「子を繰り上げ」＝子の `parent_id` を祖父に付け替えて親だけ削除 |
+| プロジェクトの削除 | `projects.deleted_at` を入れる。配下タスクは触らない（PJ ごと隠れるため） |
+| 復元 | `deleted_at` を NULL に戻す。**祖先が削除済みなら祖先もまとめて復元します**（宙に浮いた子が生まれないため） |
+| 物理削除 | Vercel Cron（日次）で `deleted_at < now - 30日` を対象に、`task_assignees` → `task_dependencies` → `tasks` の順で実削除 |
+
+**(b) DB のカスケードには依存しません** ⚠️
+
+libSQL は SQLite 同様に外部キーを既定で無効にしており、有効化には**接続ごと**に
 `PRAGMA foreign_keys = ON` が必要です。ところが Vercel の serverless から使う HTTP クライアント
 （`@libsql/client/web`）はステートレスで、リクエストごとに別の接続にあたる可能性があります。
 さらにこの PRAGMA はトランザクションの内側では効きません。
 
 つまり **「接続初期化で 1 回 PRAGMA を投げれば安全」という前提は Turso + HTTP では成立しません。**
-ここを DB 任せにすると、カスケードが**エラーも出さずに黙って効かず**、孤児レコードが残ります。
+DB 任せにすると、カスケードが**エラーも出さずに黙って効かず**、孤児レコードが残ります。
 
-**(b) WBS の親削除は、そもそも UX 上の決定事項です。**
+そこで `ON DELETE CASCADE` は宣言せず、**関連行の削除はすべてアプリケーション層で明示的に行います。**
 
-`parent_id` のカスケードをそのまま効かせると、親タスクを 1 つ消しただけで**サブツリー全体が
-消えます**。これは事故になりうるので、挙動を明示的に決めます。
+論理削除を採用したことで、この危険が及ぶ範囲は**物理削除を行う cron の 1 経路だけ**に閉じ込められます。
+そこは `db.batch()` で順序を固定し、結合テストで「物理削除後に孤児が 0 件であること」を毎回検証します。
 
-**採用する方針:**
+`PRAGMA foreign_keys = ON` は**ローカル開発とテスト（ファイル DB）でのみ有効化**します。そこでは
+実際に効くため、アプリ層の削除ロジックの取りこぼしを CI で検出できます。
 
-| 操作 | 挙動 |
-|---|---|
-| 子を持つタスクの削除 | **既定では拒否**し、UI で選択させる:「サブツリーごと削除」/「子を親の階層に繰り上げ（`parent_id` を祖父に付け替え）」 |
-| 削除の実行 | Server Action 内で **1 つの `db.batch()`** にまとめ、`task_assignees` → `task_dependencies` → `tasks` の順で明示的に削除する |
-| プロジェクトの削除 | 同様にアプリ層で配下を明示削除。オーナーのみ可、確認ダイアログ必須 |
-| 孤児レコードの検出 | 結合テストで「削除後に孤児が 0 件であること」を毎回検証する |
+**(c) 全クエリが `deleted_at IS NULL` を通ること**
 
-`PRAGMA foreign_keys = ON` は、**ローカル開発とテスト（ファイル DB / 埋め込みレプリカ）では
-必ず有効化します。** そこでは有効に効くため、アプリ層の削除ロジックの取りこぼしを CI で
-検出できるからです。本番（HTTP）では効かない前提で書き、効いた場合も結果が変わらないようにします。
-
-この方針は M1 #8（接続層）と #9（スキーマ）の受け入れ条件に含めます。
-
----
+論理削除の最大の事故は「絞り込みの書き忘れで削除済みが表示される／伝播対象に入る」ことです。
+§3.2 のとおり `lib/db/queries.ts` に問い合わせを集約し、素の `db.select()` を画面や Server Action に
+書かない規約とします。ESLint の `no-restricted-syntax` で機械的に禁止することも検討します。
 
 ## 5. 依存連動の設計
 
@@ -268,19 +301,31 @@ libSQL は SQLite と同様に外部キーを既定で無効にしており、�
 ```
 移動対象タスク T が Δ 日だけ動いたとき:
 
+0. Δ は「暦日」で数える（決定 D-09）。土日・祝日は飛ばさない
 1. PJ の dependency_sync_enabled が false なら → T のみ更新して終了
 2. ドラッグ時に修飾キー（Shift）が押されていたら → T のみ更新して終了
 3. task_dependencies を有向グラフとみなし、T から到達可能な後続を
-   トポロジカル順に走査する
+   トポロジカル順に走査する。ただし deleted_at が入っているタスクは
+   グラフから除外し、そこで枝を打ち切る（決定 D-06）
 4. 各後続 S について:
      - S.is_pinned が true  → S を動かさない。かつ S より先へは伝播しない（枝を打ち切る）
      - S.is_pinned が false → S.start += Δ, S.end += Δ
    すでに訪問済みのノードは再度シフトしない（合流時の二重適用を防ぐ）
 5. 影響を受けたタスクの祖先 summary を、子の min(start)/max(end) で再計算する（ボトムアップ）
-6. 動いたタスクの一覧をまとめて返す
+6. 動いたタスクの一覧を、**変更前の日付とあわせて**返す（§5.4 の取り消しに使う）
 ```
 
 CPM 計算は行いません。単なるトポロジカル走査 + 定数シフトです。
+
+**Δ を暦日で数える理由（決定 D-09）:** 稼働日で数えると「ギャップを暦日と稼働日のどちらで測るか」
+という問題が派生し、「Δ 日ぶん平行移動する」という不変条件が保てなくなります。SVAR の
+work-time calendar は PRO 機能で無料版には無いため、稼働日計算は完全に自前実装になります。
+土日は **`highlightTime` プロパティで背景をグレーにするだけ**（見た目のみ）とし、計算には
+影響させません。これは無料版の標準機能で、追加コストはほぼゼロです。
+
+**削除済みタスクで枝を打ち切る理由（決定 D-06）:** A→B→C の B を削除したとき、A を動かしても
+C は動きません。B を飛ばして A→C をつなぎ直すと、B を復元したときに依存が重複するためです。
+依存レコード自体は残るので、B を復元すれば元どおり鎖が復活します。
 
 **ピン留めで枝を打ち切る理由:** ピン留めタスクを飛び越えてその後続だけを動かすと、
 ピン留めタスクとの間のギャップが壊れます。「隙間を保つ」という方式の不変条件を守るには、
@@ -309,11 +354,30 @@ CPM 計算は行いません。単なるトポロジカル走査 + 定数シフ�
 | T-9 | 子タスクが動いた結果、親 summary の期間が伸びる | 親の start/end が再計算される |
 | T-10 | サイクルを作る依存の追加 | 追加が拒否される |
 | T-11 | 100 タスク / 200 依存の直列＋分岐 | 1 回の伝播が 50ms 未満（回帰検知用） |
-| T-12 | バーのリサイズ（end のみ変更） | Δ = end の変化量として後続へ伝播 |
+| T-12 | バーのリサイズ（end のみ変更） | Δ = end の変化量として後続へ伝播（決定 D-01） |
+| T-13 | 直列 A→B→C、B が削除済み、A を +3 | A のみ +3。C は不動（決定 D-06） |
+| T-14 | 土日を跨ぐ移動（金→月に +3） | 暦日で +3。土日は飛ばさない（決定 D-09） |
+| T-15 | 伝播結果に変更前の日付が含まれる | 取り消しに必要な before/after が揃う（§5.4） |
+| T-16 | 親の進捗・工数が子から集計される | 工数は合計、進捗は見積工数で加重平均（決定 D-11） |
 
-T-12 は仕様の穴です。要件は「移動量 Δ を平行伝播」としか書いていません。
-**提案: リサイズで終了日が動いた場合も、その差分を Δ として後続へ伝播します**（先行の終了が
-後ろへずれたのに後続が動かないのは直感に反するため）。これは §9 の未決事項 Q-1 とします。
+### 5.4 伝播の取り消し（直前 1 回）
+
+一度のドラッグで多数のタスクが動くため、取り消し手段が無いと事故が戻せません。SVAR の
+Undo/Redo は PRO 機能なので自前で用意します（決定 D-16）。
+
+**履歴テーブルは作りません。** 伝播の Server Action が「変更前の日付」もあわせて返し、
+クライアントはそれをトーストに保持します。
+
+```
+[ 5 件のタスクを移動しました        元に戻す ]
+```
+
+「元に戻す」を押すと、保持していた変更前の日付をそのままサーバへ送り返して適用します。
+リロードすると取り消せなくなりますが、「直前 1 回だけ」という要件には十分です。
+複数回の Undo が必要になったら履歴テーブルを追加しますが、Phase 1 では持ち込みません。
+
+ピン留めや削除済みで**枝が打ち切られた場合も、その旨をトーストに併記します**
+（「2 件はピン留めのため移動しませんでした」）。黙って動かないのが一番わかりにくいためです。
 
 ---
 
@@ -326,16 +390,22 @@ T-12 は仕様の穴です。要件は「移動量 Δ を平行伝播」とし�
 | `/projects/[id]/tasks` | 課題管理。一覧テーブル、フィルター、ソート | `mantine-datatable` |
 | `/projects/[id]/tasks/[taskId]` | タスク詳細（Drawer で重ねる） | Mantine `Drawer` + `Form` |
 | `/projects/[id]/gantt` | WBS ツリー + Gantt + 依存矢印 + ドラッグ | `@svar-ui/react-gantt` |
-| `/projects/[id]/settings` | 依存連動トグル、メンバー管理 | Mantine `Switch` |
+| `/projects/[id]/settings` | 依存連動トグル、メンバー管理、PJ 削除（オーナーのみ） | Mantine `Switch` |
+| `/projects/[id]/trash` | ゴミ箱。削除済みタスクの一覧・復元・完全削除 | `mantine-datatable` |
 | （Phase 2）`/projects/[id]/board` | カンバン | |
 | （Phase 2）`/dashboard` | 横断ダッシュボード | |
 
 `/projects/[id]` は `/projects/[id]/tasks` へリダイレクトします。
 
-すべての PJ 配下ルートは `project_members` による認可チェックを共通レイアウトで行います。
-**Public リポジトリ・社内ツールという性質上、認可漏れが最大の事故リスク**なので、
-「PJ にアクセスできるか」を返す関数を 1 つに集約し、全ルートとすべての Server Action の
-先頭で必ず通します。
+**認可の考え方**（決定 D-07 / D-08 / D-15）。閲覧は全ログインユーザーに開くので、防御線は次の 2 段だけです。
+
+1. **ログインできるかどうか** — 許可ドメイン外のアカウントはサインイン時点で拒否します。
+   Public リポジトリの社内ツールとして、ここが実質唯一の境界線です（R-10）。
+2. **破壊的操作ができるかどうか** — PJ の削除は `role='owner'` のみ。タスクの編集・削除は全員可。
+
+`requireLogin()` と `requireProjectOwner()` の 2 関数に集約し、全ルートとすべての Server Action の
+先頭で必ず通します。「読めるかどうか」の判定は存在しません（全員読めるため）。この単純さ自体が
+認可漏れの余地を減らします。
 
 ---
 
@@ -379,9 +449,12 @@ CI（`.github/workflows/ci.yml`）で `npm ci` → typecheck → lint → test �
 |---|---|---|
 | 8 | Drizzle + `@libsql/client` 接続層。ローカル/テストでは `PRAGMA foreign_keys = ON` を有効化し、**本番 HTTP では効かない前提**でアプリ層削除を正とする（§4.4） | data |
 | 9 | **スキーマ実装 + 初回マイグレーション（§4 の承認後）** | data |
-| 9b | 削除ロジック（サブツリー削除 / 子の繰り上げ）と「孤児 0 件」結合テスト（§4.4） | data |
-| 10 | Auth.js v5 + Google OAuth + Drizzle アダプタ | feature |
-| 11 | 認可ヘルパ（`requireProjectAccess`）とユニットテスト | feature |
+| 9b | 論理削除ロジック（サブツリー削除 / 子の繰り上げ / 復元時の祖先連鎖）とテスト（§4.4） | data |
+| 9c | ゴミ箱画面と、Vercel Cron による 30 日超の物理削除 + 「孤児 0 件」結合テスト | data |
+| 10 | Better Auth + Google OAuth + `drizzleAdapter`。認証テーブルは CLI で生成 | feature |
+| 10b | サインイン時のドメイン制限（許可ドメイン外は拒否）とユニットテスト（決定 D-07） | feature |
+| 11 | 認可ヘルパ（`requireLogin` / `requireProjectOwner`）とユニットテスト | feature |
+| 11b | 表示ラベル層 `lib/labels.ts`（DB 値 → 日本語）とユニットテスト（決定 D-17〜D-19） | feature |
 | 12 | シードスクリプト（開発用のダミー PJ / タスク / 依存） | data |
 
 ### M2 — プロジェクトと課題管理
@@ -410,10 +483,11 @@ CI（`.github/workflows/ci.yml`）で `npm ci` → typecheck → lint → test �
 |---|---|---|
 | 23 | 依存の CRUD + 循環検出（T-10） | feature |
 | 24 | Gantt 上での依存矢印の描画と作成 UI（`e2s`） | feature |
-| 25 | **伝播ロジック `propagate.ts` を TDD で実装**（T-1〜T-5, T-9, T-11） | feature |
-| 26 | `api.intercept("update-task")` でドロップを捕捉し Server Action を呼ぶ | feature |
+| 25 | **伝播ロジック `propagate.ts` を TDD で実装**（T-1〜T-16 の純粋関数部分） | feature |
+| 26 | `api.intercept("update-task")` でドロップを捕捉し Server Action を呼ぶ。リサイズも Δ として扱う（決定 D-01） | feature |
 | 27 | 楽観更新と、サーバ確定結果でのリコンサイル | feature |
-| 28 | E2E: ドラッグ → 後続が動く | feature |
+| 27b | 伝播結果のトースト（件数・打ち切り理由）と「元に戻す」（§5.4 / 決定 D-16） | feature |
+| 28 | E2E: ドラッグ → 後続が動く → 元に戻す | feature |
 
 ### M5 — 連動の ON / OFF（3階層）
 
@@ -440,20 +514,21 @@ CI（`.github/workflows/ci.yml`）で `npm ci` → typecheck → lint → test �
 
 ## 9. リスクと未決事項
 
+未決事項（Q-1〜Q-4）は §12 のヒアリングですべて決着しました。以下は残るリスクのみです。
+
 | ID | 内容 | 影響 | 対応 |
 |---|---|---|---|
-| **R-1** | `next-auth` v5 が依然 beta（5.0.0-beta.32）。v4 は App Router との相性が悪い | 中 | **v5 beta を採用します。** App Router 前提では実質これ一択で、広く本番採用されています。バージョンは `save-exact=true` で固定し、更新は意図的にのみ行います。回避先は Better Auth ですが、要件の Auth.js 指定から外れるため第一候補にしません |
+| **R-1** | 認証ライブラリが `REQUIREMENTS.md` 記載の Auth.js から Better Auth へ変わった | 低 | 決定 D-04。`REQUIREMENTS.md` 側も追随して更新します（M0 で対応）。Better Auth 1.6.26 は安定版で、peer に Next 16 / React 19 / drizzle-orm 0.45.2 を明記しており噛み合わせは確認済み |
 | **R-2** | `@libsql/client` はネイティブバイナリを持つ。`.npmrc` の `ignore-scripts=true` と衝突しうる | 中 | Vercel の serverless では **HTTP 経由の `drizzle-orm/libsql/web` + `@libsql/client/web`** を使い、ネイティブ依存を回避します。M1 の #8 で疎通を先に確認します |
 | **R-3** | SVAR Gantt は SSR 不可。ハイドレーション不整合が出やすい | 中 | クライアント専用の二段構え（§2.4）で確実に切り離します |
 | **R-4** | Vercel の Preview は URL が毎回変わるため、Google OAuth のリダイレクト URI を登録しきれない | 中 | Preview 用に固定のブランチドメインを 1 つ用意し、それだけを OAuth に登録します（§10.3） |
 | **R-5** | Public リポジトリ。シークレット混入は不可逆 | **高** | `.env*` は gitignore 済み。`.env.example` には値を書かない。GitHub の Secret Scanning / Push Protection を有効化（§10.1） |
 | **R-6** | 伝播ロジックのバグは「気づかないうちに全体の日程がずれる」形で出る | **高** | 純粋関数に隔離し、§5.3 のテストを実装より先に書きます。T-11 で性能回帰も見ます |
-| **R-7** | Turso の HTTP 接続では `PRAGMA foreign_keys = ON` を接続ごとに担保できず、`ON DELETE CASCADE` が**無言で効かない**。孤児レコードが残る | **高** | §4.4 のとおり、削除はアプリ層で明示的に行い DB カスケードに依存しません。ローカル/テストでは PRAGMA を有効化し、孤児 0 件を結合テストで検証します（M1 #8 / #9b） |
-| **R-8** | `parent_id` のカスケードで、親タスク 1 件の削除がサブツリー全体の消失につながる | **高** | 子を持つタスクの削除は既定で拒否し、「サブツリー削除」か「子の繰り上げ」を UI で選ばせます（§4.4） |
+| **R-7** | Turso の HTTP 接続では `PRAGMA foreign_keys = ON` を接続ごとに担保できず、外部キー制約が**無言で効かない**。孤児レコードが残る | **高** | §4.4 のとおり `ON DELETE CASCADE` を宣言せず、関連行の削除はアプリ層で明示的に行います。論理削除の採用により、物理削除は cron の 1 経路だけに閉じました。ローカル/テストでは PRAGMA を有効化し、孤児 0 件を結合テストで検証します（M1 #8 / #9c） |
+| **R-8** | 親タスク 1 件の削除がサブツリー全体の消失につながる | 中 | 既定で拒否し「サブツリー削除」か「子の繰り上げ」を選ばせます（決定 D-02）。論理削除なので 30 日以内なら復元可能で、影響度は当初想定より下がりました |
+| **R-9** | 論理削除は「絞り込みの書き忘れ」で削除済みが表示・伝播される事故を生む | **高** | §3.2 / §4.4(c) のとおり問い合わせを `lib/db/queries.ts` に集約し、素の `db.select()` を画面や Server Action に書かない規約とします。T-13 で伝播側も検証します |
+| **R-10** | ドメイン制限が実質唯一の防御線。実装漏れは全世界に開くことを意味する | **高** | サインインのフックで拒否し、ユニットテストで許可/拒否の両方を検証します（M1 #10b）。E2E でも対象外ドメインが弾かれることを確認します |
 | **S-1** | SVAR の `end` が「終了日を含む」か「排他」か未確定。ここを取り違えると全タスクが 1 日ずれる | **高** | M3 の #18 でスパイクを立てて実測し、`toGanttTasks` の変換に閉じ込めます。計画上は「`end_date` は終了日を含む」を仮置きしています |
-| **Q-1** | バーのリサイズ（期間変更）で後続へ伝播するか（§5.3 T-12） | 中 | **提案: 伝播する。** 要否の判断をお願いします |
-| **Q-2** | 削除は物理削除か論理削除（`deleted_at`）か | 低 | **提案: 物理削除（カスケードはアプリ層で実装。§4.4）。** 少人数・新規データのため、論理削除の複雑さに見合いません |
-| **Q-4** | 子を持つタスクを削除するときの既定の挙動 | 中 | **提案: 既定は拒否し、「サブツリー削除」か「子の繰り上げ」を都度選ばせる。** どちらかを既定にしたい場合はご指定ください |
 | **Q-3** | Turso の Preview 環境用 DB を分けるか | 中 | **提案: 分ける。** 本番 DB を Preview から壊す事故を防げます（§10.4） |
 
 ---
@@ -519,14 +594,24 @@ Inbox / Ready / Waiting / Doing / PR / Prod Check / Done
    |---|---|---|---|
    | `TURSO_DATABASE_URL` | 本番 DB | Preview DB | §10.4 |
    | `TURSO_AUTH_TOKEN` | 〃 | 〃 | |
-   | `AUTH_SECRET` | ✓ | ✓ | `openssl rand -base64 32` で生成 |
-   | `AUTH_GOOGLE_ID` | ✓ | ✓ | §10.5 |
-   | `AUTH_GOOGLE_SECRET` | ✓ | ✓ | |
-   | `AUTH_TRUST_HOST` | `true` | `true` | Vercel 上で Auth.js v5 に必要 |
+   | `BETTER_AUTH_SECRET` | ✓ | ✓ | `openssl rand -base64 32` で生成 |
+   | `BETTER_AUTH_URL` | 本番URL | Preview固定URL | Better Auth の baseURL |
+   | `GOOGLE_CLIENT_ID` | ✓ | ✓ | §10.5 |
+   | `GOOGLE_CLIENT_SECRET` | ✓ | ✓ | |
+   | `ALLOWED_EMAIL_DOMAINS` | 例 `example.co.jp` | 〃 | 決定 D-07。カンマ区切りで複数可 |
+   | `CRON_SECRET` | ✓ | — | ゴミ箱の定期削除エンドポイントの認証 |
    | `NEXT_PUBLIC_SITE_URL` | 本番URL | Preview固定URL | |
 
 5. Preview 用に**固定のブランチドメイン**を 1 つ割り当てます（Settings → Domains で
    特定ブランチにドメインを紐付け）。これがないと OAuth のリダイレクト URI を登録できません（R-4）。
+
+6. `vercel.json` にゴミ箱削除の Cron を定義します（決定 D-05）。これはリポジトリ側で用意します。
+
+   ```json
+   { "crons": [{ "path": "/api/cron/purge-trash", "schedule": "0 18 * * *" }] }
+   ```
+
+   Vercel Cron は UTC で動くため、`0 18 * * *` は日本時間の毎日 3:00 にあたります。
 
 ### 10.4 Turso
 
@@ -552,18 +637,22 @@ https://<本番ドメイン>/api/auth/callback/google
 https://<Preview固定ドメイン>/api/auth/callback/google
 ```
 
+Better Auth のコールバックパスは Auth.js と同じ `/api/auth/callback/google` です。
+
 社内チーム向けのため、OAuth 同意画面は可能なら **Internal**（Google Workspace 組織内）にします。
 組織外の利用者がいる場合は External + テストユーザー登録が必要です。
+
+なお **同意画面を Internal にしても、それだけでは防御になりません**。Internal は「同意画面を出せる
+範囲」の制御であり、アプリ側で `ALLOWED_EMAIL_DOMAINS` による拒否を必ず実装します（決定 D-07 / R-10）。
 
 ---
 
 ## 11. 次のアクション
 
 1. §4 のデータモデルをレビューし、**承認またはフィードバック**をください（M1 #9 のブロッカー）
-2. §9 の **Q-1（リサイズ時の伝播）** と **Q-4（子を持つタスクの削除）** を判断してください
-3. §10.1 / §10.2 の GitHub セットアップを実施してください（20 分程度）。
+2. §10.1 / §10.2 の GitHub セットアップを実施してください（20 分程度）。
    `docs/handoff.md` のとおり `/project-bootstrap` はローカルで実行してください
-4. 承認が出たら M0（scaffold）から着手します。M0 マージ後に §10.3 の Vercel 連携を実施してください
+3. 承認が出たら M0（scaffold）から着手します。M0 マージ後に §10.3 の Vercel 連携を実施してください
 
 ### 作業の割り振りについて
 
@@ -573,3 +662,32 @@ https://<Preview固定ドメイン>/api/auth/callback/google
 純粋関数として先行実装できます（DB 非依存のため M1 のブロックを受けません）。
 
 ブラウザ確認や Vercel/Turso の疎通が要る M0・M1・M3 はローカル側が向いています。
+
+---
+
+## 12. 決定ログ
+
+2026-08-06 のヒアリングで確定した 19 件です。`REQUIREMENTS.md` に書かれていない、
+または書かれた内容を上書きする決定を記録します。
+
+| ID | 論点 | 決定 |
+|---|---|---|
+| D-01 | リサイズ時の伝播 | **伝播する**（終了日の変化量を Δ とする） |
+| D-02 | 子を持つ親の削除 | **既定は拒否**し、サブツリー削除／子の繰り上げを都度選ばせる |
+| D-03 | 削除方式 | **論理削除**（ゴミ箱あり） |
+| D-04 | 認証ライブラリ | **Better Auth**（`REQUIREMENTS.md` の Auth.js を上書き） |
+| D-05 | ゴミ箱の保持期間 | **30 日で自動物理削除**（Vercel Cron） |
+| D-06 | 論理削除タスクと依存 | **グラフから除外し伝播も切る**。依存レコードは残す |
+| D-07 | ログイン制限 | **特定ドメインのみ許可** |
+| D-08 | 既定の可視範囲 | **全ログインユーザーが全 PJ を閲覧可** |
+| D-09 | Δ の数え方 | **暦日**。土日は `highlightTime` でグレー表示（見た目のみ） |
+| D-10 | ステータス | **固定 4 値**（テーブル化しない） |
+| D-11 | 親タスクの進捗・工数 | **子から自動集計**（工数は合計、進捗は見積工数で加重平均） |
+| D-12 | マイルストーン | **スキーマだけ用意**し Phase 1 では UI を出さない |
+| D-13 | 工数の単位 | **時間を小数で保持**（`real`） |
+| D-14 | 優先度の日本語化 | **する**（英語ラベルを画面に出さない） |
+| D-15 | 削除権限 | **タスクは全員・PJ は `role='owner'` のみ** |
+| D-16 | 伝播の取り消し | **直前 1 回だけ**。履歴テーブルは作らない |
+| D-17 | 値の持ち方 | **DB は英字・画面だけ日本語**（`lib/labels.ts` に集約） |
+| D-18 | 優先度ラベル | `low`→低 / `medium`→中 / `high`→高 / `urgent`→**緊急** |
+| D-19 | ステータスラベル | `todo`→未着手 / `in_progress`→**対応中** / `review`→**確認中** / `done`→完了 |
