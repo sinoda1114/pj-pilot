@@ -44,3 +44,10 @@ export async function getTaskById(db: LibSQLDatabase<typeof schema>, taskId: str
 export async function listActiveChildren(db: LibSQLDatabase<typeof schema>, parentId: string) {
   return db.select().from(tasks).where(and(eq(tasks.parentId, parentId), isNull(tasks.deletedAt)));
 }
+
+export async function listActiveTasksByProject(db: LibSQLDatabase<typeof schema>, projectId: string) {
+  return db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.projectId, projectId), isNull(tasks.deletedAt)));
+}
