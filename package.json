@@ -1,0 +1,46 @@
+{
+  "name": "pj-pilot",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@mantine/core": "9.5.1",
+    "@mantine/dates": "9.5.1",
+    "@mantine/hooks": "9.5.1",
+    "clsx": "2.1.1",
+    "date-fns": "4.4.0",
+    "dayjs": "1.11.21",
+    "mantine-datatable": "9.4.0",
+    "next": "16.3.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "26.1.2",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "6.0.5",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.0",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}

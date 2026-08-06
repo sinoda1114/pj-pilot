@@ -13,6 +13,9 @@ next-env.d.ts
 
 # testing
 /coverage
+/playwright-report
+/test-results
+/blob-report
 
 # env files
 .env
