@@ -1,4 +1,4 @@
 # claude-kit が生成したマニフェスト。手で編集しないでください。
 # 更新: scripts/update-repos.sh
-kit_commit=88c9b09
+kit_commit=89039b3
 skills=ai-review architecture-review code-review-cc create-pr generate-docs hearing implementation-plan project-standardize security-review-cc work-summary kit-ping
