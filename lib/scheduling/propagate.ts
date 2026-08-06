@@ -90,6 +90,26 @@ function propagateToSuccessors(
   return { changedIds, skipped };
 }
 
+/**
+ * summary タスクの progress/estimatedHours/actualHours を、直接の子から集計する
+ * （決定 D-11: 工数は単純合計、進捗は見積工数による加重平均。見積が無い子は重み 1）。
+ *
+ * ドラッグ操作による伝播（moveTask/resizeTaskEnd 内の recomputeAncestorSummaries）と、
+ * タスク CRUD 経由の再集計（lib/tasks/summary.ts）の両方から呼ばれる、この2経路で
+ * 数式が食い違わないようにするための唯一の計算箇所。DB も React も参照しない純粋関数。
+ */
+export function aggregateSummaryValues(
+  children: Pick<ScheduleTask, "progress" | "estimatedHours" | "actualHours">[],
+): Pick<SummaryAggregate, "progress" | "estimatedHours" | "actualHours"> {
+  const estimatedHours = children.reduce((sum, c) => sum + (c.estimatedHours ?? 0), 0);
+  const actualHours = children.reduce((sum, c) => sum + (c.actualHours ?? 0), 0);
+  const weightedSum = children.reduce((sum, c) => sum + c.progress * (c.estimatedHours ?? 1), 0);
+  const totalWeight = children.reduce((sum, c) => sum + (c.estimatedHours ?? 1), 0);
+  const progress = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 0;
+
+  return { progress, estimatedHours, actualHours };
+}
+
 function buildSuccessorMap(dependencies: Dependency[]): Map<string, string[]> {
   const map = new Map<string, string[]>();
   for (const { predecessorId, successorId } of dependencies) {
@@ -185,11 +205,7 @@ function recomputeAncestorSummaries(
     const startDate = children.map((c) => c.startDate).reduce((min, d) => (d < min ? d : min));
     const endDate = children.map((c) => c.endDate).reduce((max, d) => (d > max ? d : max));
 
-    const estimatedHours = children.reduce((sum, c) => sum + (c.estimatedHours ?? 0), 0);
-    const actualHours = children.reduce((sum, c) => sum + (c.actualHours ?? 0), 0);
-    const weightedSum = children.reduce((sum, c) => sum + c.progress * (c.estimatedHours ?? 1), 0);
-    const totalWeight = children.reduce((sum, c) => sum + (c.estimatedHours ?? 1), 0);
-    const progress = totalWeight > 0 ? Math.round(weightedSum / totalWeight) : 0;
+    const { progress, estimatedHours, actualHours } = aggregateSummaryValues(children);
 
     const before = toDateChange(summary);
     const after = { startDate, endDate };

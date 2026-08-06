@@ -57,6 +57,33 @@ export async function listActiveChildren(db: Db, parentId: string) {
     .where(and(eq(tasks.parentId, parentId), isNull(tasks.deletedAt)));
 }
 
+/**
+ * 指定したプロジェクト内で、指定した `parentId` を持つ生存タスクを返す。
+ * `listActiveChildren` と異なり `parentId` に `null` を渡すとルート直下
+ * （`parent_id IS NULL`）の生存タスクを返す（SQL の `parent_id = NULL` は
+ * 常に false になるため isNull で分岐する）。
+ *
+ * `projectId` を必須にしているのは、`parentId = null`（ルート直下）のケースだと
+ * `parent_id` だけでは他プロジェクトのルートタスクと区別できないため。
+ * これを付け忘れると、あるプロジェクトのルートタスクをインデントしたときに
+ * 別プロジェクトのルートタスクが「直前の兄弟」として誤って選ばれ、
+ * プロジェクトをまたいだ親子関係が生まれてしまう（レビューで発見・修正）。
+ * indent/outdent（`lib/tasks/hierarchy.ts`）で「兄弟の特定」と
+ * 「新しい親の子一覧取得」の両方に使う汎用ヘルパー。
+ */
+export async function listActiveTasksByParent(db: Db, projectId: string, parentId: string | null) {
+  return db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.projectId, projectId),
+        parentId === null ? isNull(tasks.parentId) : eq(tasks.parentId, parentId),
+        isNull(tasks.deletedAt),
+      ),
+    );
+}
+
 export async function listActiveTasksByProject(db: Db, projectId: string) {
   return db
     .select()
