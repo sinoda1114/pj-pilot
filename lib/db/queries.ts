@@ -51,7 +51,10 @@ export async function getTaskById(db: Db, taskId: string) {
 }
 
 export async function listActiveChildren(db: Db, parentId: string) {
-  return db.select().from(tasks).where(and(eq(tasks.parentId, parentId), isNull(tasks.deletedAt)));
+  return db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.parentId, parentId), isNull(tasks.deletedAt)));
 }
 
 export async function listActiveTasksByProject(db: Db, projectId: string) {

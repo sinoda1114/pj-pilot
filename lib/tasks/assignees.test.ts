@@ -117,7 +117,9 @@ describe("tasks/assignees", () => {
     it("既に同じ一覧を渡しても例外にならない（変更なし）", async () => {
       await setTaskAssignees(handle.db, SESSION, taskId, ["alice"]);
 
-      await expect(setTaskAssignees(handle.db, SESSION, taskId, ["alice"])).resolves.toBeUndefined();
+      await expect(
+        setTaskAssignees(handle.db, SESSION, taskId, ["alice"]),
+      ).resolves.toBeUndefined();
 
       const result = await listTaskAssignees(handle.db, SESSION, taskId);
       expect(result.map((r) => r.userId)).toEqual(["alice"]);

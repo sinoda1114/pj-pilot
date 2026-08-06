@@ -34,7 +34,10 @@ describe("queries: 生存レコードのみを返す（§3.2 / §4.4(c)）", () 
     if (!alive || !deleted) {
       throw new Error("Failed to create test projects");
     }
-    await handle.db.update(projects).set({ deletedAt: new Date() }).where(eq(projects.id, deleted.id));
+    await handle.db
+      .update(projects)
+      .set({ deletedAt: new Date() })
+      .where(eq(projects.id, deleted.id));
 
     const result = await listActiveProjects(handle.db);
 
@@ -46,7 +49,10 @@ describe("queries: 生存レコードのみを返す（§3.2 / §4.4(c)）", () 
     if (!deleted) {
       throw new Error("Failed to create test project");
     }
-    await handle.db.update(projects).set({ deletedAt: new Date() }).where(eq(projects.id, deleted.id));
+    await handle.db
+      .update(projects)
+      .set({ deletedAt: new Date() })
+      .where(eq(projects.id, deleted.id));
 
     const result = await getActiveProject(handle.db, deleted.id);
 
