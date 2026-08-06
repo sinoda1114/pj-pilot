@@ -4,7 +4,8 @@
 WBS / ガントチャートを扱います。
 
 現在は設計フェーズで、実装はこれからです。確定済みの仕様は
-[REQUIREMENTS.md](REQUIREMENTS.md) にまとまっています。
+[REQUIREMENTS.md](REQUIREMENTS.md)、実装の進め方は
+[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) にまとまっています。
 
 ## 目指しているもの
 
