@@ -7,7 +7,7 @@
 
 import { and, eq, isNull } from "drizzle-orm";
 import type { LibSQLDatabase } from "drizzle-orm/libsql";
-import { projects } from "./schema";
+import { projects, tasks } from "./schema";
 import type * as schema from "./schema";
 
 export async function listActiveProjects(db: LibSQLDatabase<typeof schema>) {
@@ -22,4 +22,25 @@ export async function getActiveProject(db: LibSQLDatabase<typeof schema>, projec
     .limit(1);
 
   return project;
+}
+
+export async function getActiveTask(db: LibSQLDatabase<typeof schema>, taskId: string) {
+  const [task] = await db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), isNull(tasks.deletedAt)))
+    .limit(1);
+
+  return task;
+}
+
+/** 復元時の祖先チェーン走査（§4.4(a)）では削除済みの行も見る必要があるため、生存フィルタをかけない。 */
+export async function getTaskById(db: LibSQLDatabase<typeof schema>, taskId: string) {
+  const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId)).limit(1);
+
+  return task;
+}
+
+export async function listActiveChildren(db: LibSQLDatabase<typeof schema>, parentId: string) {
+  return db.select().from(tasks).where(and(eq(tasks.parentId, parentId), isNull(tasks.deletedAt)));
 }
