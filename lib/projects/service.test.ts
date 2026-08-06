@@ -6,7 +6,7 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { UnauthorizedError, ForbiddenError } from "../auth/errors";
 import { createDb, type DbHandle } from "../db/client";
-import { projectMembers } from "../db/schema";
+import { projectMembers, projects } from "../db/schema";
 import { NotFoundError } from "../errors";
 import { createProject, deleteProject, listProjects, updateProject } from "./service";
 
@@ -52,6 +52,20 @@ describe("projects/service", () => {
         .from(projectMembers)
         .where(eq(projectMembers.projectId, project.id));
       expect(members).toEqual([{ projectId: project.id, userId: OWNER.userId, role: "owner" }]);
+    });
+
+    it("トランザクション: 途中で失敗したら INSERT 済みの行もロールバックされる（Amazon Q レビュー指摘の検証）", async () => {
+      // createProject 自体を壊さずに、使っている db.transaction の仕組みが
+      // このテスト環境（file DB の @libsql/client）で実際にロールバックすることを検証する。
+      await expect(
+        handle.db.transaction(async (tx) => {
+          await tx.insert(projects).values({ name: "ロールバックされるはず" });
+          throw new Error("simulated failure");
+        }),
+      ).rejects.toThrow("simulated failure");
+
+      const remaining = await handle.db.select().from(projects);
+      expect(remaining).toEqual([]);
     });
   });
 
@@ -103,6 +117,32 @@ describe("projects/service", () => {
       const result = await updateProject(handle.db, OWNER, project.id, {});
 
       expect(result).toEqual(project);
+    });
+
+    it("全キーが undefined でも例外にならない（Amazon Q レビュー指摘: Object.keys だけでは検出できない）", async () => {
+      const project = await createProject(handle.db, OWNER, { name: "変更なし" });
+
+      const result = await updateProject(handle.db, OWNER, project.id, {
+        name: undefined,
+        description: undefined,
+      });
+
+      expect(result).toEqual(project);
+    });
+
+    it("一部が undefined でも、値が指定されたフィールドだけ更新する", async () => {
+      const project = await createProject(handle.db, OWNER, {
+        name: "元の名前",
+        description: "元の説明",
+      });
+
+      const result = await updateProject(handle.db, OWNER, project.id, {
+        name: "新しい名前",
+        description: undefined,
+      });
+
+      expect(result.name).toBe("新しい名前");
+      expect(result.description).toBe("元の説明");
     });
 
     it("論理削除済みのPJは NotFoundError を投げる", async () => {

@@ -33,7 +33,11 @@ export async function listProjects(db: LibSQLDatabase<typeof schema>, session: A
   return listActiveProjects(db);
 }
 
-/** 作成者はそのまま `project_members.role='owner'` として登録される。 */
+/**
+ * 作成者はそのまま `project_members.role='owner'` として登録される。
+ * 2つの INSERT はトランザクションでまとめる。分けたままだと2つ目が失敗した際に
+ * owner の居ないプロジェクトが残り、誰も削除できなくなる（Amazon Q レビュー指摘）。
+ */
 export async function createProject(
   db: LibSQLDatabase<typeof schema>,
   session: AuthSession | null,
@@ -41,22 +45,24 @@ export async function createProject(
 ) {
   const authed = requireLogin(session);
 
-  const [project] = await db
-    .insert(projects)
-    .values({ name: input.name, description: input.description })
-    .returning();
+  return db.transaction(async (tx) => {
+    const [project] = await tx
+      .insert(projects)
+      .values({ name: input.name, description: input.description })
+      .returning();
 
-  if (!project) {
-    throw new Error("プロジェクトの作成に失敗しました");
-  }
+    if (!project) {
+      throw new Error("プロジェクトの作成に失敗しました");
+    }
 
-  await db.insert(projectMembers).values({
-    projectId: project.id,
-    userId: authed.userId,
-    role: "owner",
+    await tx.insert(projectMembers).values({
+      projectId: project.id,
+      userId: authed.userId,
+      role: "owner",
+    });
+
+    return project;
   });
-
-  return project;
 }
 
 /** 決定 D-08/§6: PJ の編集自体は全ログインユーザーに開く（削除だけが owner 限定）。 */
@@ -73,13 +79,21 @@ export async function updateProject(
     throw new NotFoundError("プロジェクトが見つかりません");
   }
 
-  // 更新項目が1つも無いと Drizzle が "No values to set" で例外を投げるため、
-  // その場合は DB に触らず既存の状態をそのまま返す。
-  if (Object.keys(input).length === 0) {
+  // 更新項目が1つも無い（`{}` や全キーが undefined）と Drizzle が
+  // "No values to set" で例外を投げるため、その場合は DB に触らず既存の状態を返す
+  // （Amazon Q レビュー指摘: `{ name: undefined }` は Object.keys では検出できない）。
+  const updates = Object.fromEntries(
+    Object.entries(input).filter(([, value]) => value !== undefined),
+  );
+  if (Object.keys(updates).length === 0) {
     return existing;
   }
 
-  const [updated] = await db.update(projects).set(input).where(eq(projects.id, projectId)).returning();
+  const [updated] = await db
+    .update(projects)
+    .set(updates)
+    .where(eq(projects.id, projectId))
+    .returning();
 
   if (!updated) {
     throw new Error("プロジェクトの更新に失敗しました");
