@@ -7,7 +7,7 @@
 
 import { and, eq, isNull } from "drizzle-orm";
 import type { LibSQLDatabase } from "drizzle-orm/libsql";
-import { projects, tasks } from "./schema";
+import { projects, taskDependencies, tasks } from "./schema";
 import type * as schema from "./schema";
 
 export async function listActiveProjects(db: LibSQLDatabase<typeof schema>) {
@@ -50,4 +50,15 @@ export async function listActiveTasksByProject(db: LibSQLDatabase<typeof schema>
     .select()
     .from(tasks)
     .where(and(eq(tasks.projectId, projectId), isNull(tasks.deletedAt)));
+}
+
+/**
+ * `task_dependencies` に `deleted_at` は無い（決定 D-06: タスク削除時も依存レコード自体は残す）。
+ * そのため生存フィルタは不要で、単純にプロジェクト単位で全件返す。
+ */
+export async function listDependenciesByProject(
+  db: LibSQLDatabase<typeof schema>,
+  projectId: string,
+) {
+  return db.select().from(taskDependencies).where(eq(taskDependencies.projectId, projectId));
 }
