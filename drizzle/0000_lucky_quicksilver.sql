@@ -35,7 +35,8 @@ CREATE TABLE `task_dependencies` (
 	FOREIGN KEY (`project_id`) REFERENCES `projects`(`id`) ON UPDATE no action ON DELETE no action,
 	FOREIGN KEY (`predecessor_id`) REFERENCES `tasks`(`id`) ON UPDATE no action ON DELETE no action,
 	FOREIGN KEY (`successor_id`) REFERENCES `tasks`(`id`) ON UPDATE no action ON DELETE no action,
-	CONSTRAINT "task_dependencies_type_check" CHECK("task_dependencies"."type" IN ('FS'))
+	CONSTRAINT "task_dependencies_type_check" CHECK("task_dependencies"."type" IN ('FS')),
+	CONSTRAINT "task_dependencies_no_self_reference" CHECK("task_dependencies"."predecessor_id" != "task_dependencies"."successor_id")
 );
 --> statement-breakpoint
 CREATE INDEX `task_dependencies_project_id_idx` ON `task_dependencies` (`project_id`);--> statement-breakpoint
@@ -62,7 +63,11 @@ CREATE TABLE `tasks` (
 	FOREIGN KEY (`parent_id`) REFERENCES `tasks`(`id`) ON UPDATE no action ON DELETE no action,
 	CONSTRAINT "tasks_priority_check" CHECK("tasks"."priority" IN ('low', 'medium', 'high', 'urgent')),
 	CONSTRAINT "tasks_status_check" CHECK("tasks"."status" IN ('todo', 'in_progress', 'review', 'done')),
-	CONSTRAINT "tasks_type_check" CHECK("tasks"."type" IN ('task', 'summary', 'milestone'))
+	CONSTRAINT "tasks_type_check" CHECK("tasks"."type" IN ('task', 'summary', 'milestone')),
+	CONSTRAINT "tasks_progress_check" CHECK("tasks"."progress" BETWEEN 0 AND 100),
+	CONSTRAINT "tasks_estimated_hours_check" CHECK("tasks"."estimated_hours" IS NULL OR "tasks"."estimated_hours" >= 0),
+	CONSTRAINT "tasks_actual_hours_check" CHECK("tasks"."actual_hours" IS NULL OR "tasks"."actual_hours" >= 0),
+	CONSTRAINT "tasks_no_self_parent_check" CHECK("tasks"."parent_id" IS NULL OR "tasks"."parent_id" != "tasks"."id")
 );
 --> statement-breakpoint
 CREATE INDEX `tasks_project_id_deleted_at_idx` ON `tasks` (`project_id`,`deleted_at`);--> statement-breakpoint

@@ -27,9 +27,12 @@ const timestamps = {
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .default(sql`(unixepoch())`),
+  // SQL の DEFAULT は INSERT 時のみ適用され UPDATE では発火しないため、
+  // $onUpdate で Drizzle 側から明示的に更新する（Devin レビュー指摘）。
   updatedAt: integer("updated_at", { mode: "timestamp" })
     .notNull()
-    .default(sql`(unixepoch())`),
+    .default(sql`(unixepoch())`)
+    .$onUpdate(() => new Date()),
 };
 
 export const projects = sqliteTable(
@@ -118,6 +121,23 @@ export const tasks = sqliteTable(
     check("tasks_priority_check", sql`${table.priority} IN ('low', 'medium', 'high', 'urgent')`),
     check("tasks_status_check", sql`${table.status} IN ('todo', 'in_progress', 'review', 'done')`),
     check("tasks_type_check", sql`${table.type} IN ('task', 'summary', 'milestone')`),
+    check("tasks_progress_check", sql`${table.progress} BETWEEN 0 AND 100`),
+    check(
+      "tasks_estimated_hours_check",
+      sql`${table.estimatedHours} IS NULL OR ${table.estimatedHours} >= 0`,
+    ),
+    check(
+      "tasks_actual_hours_check",
+      sql`${table.actualHours} IS NULL OR ${table.actualHours} >= 0`,
+    ),
+    // 直接の自己参照（parent_id = id）だけを防ぐ。多段の循環（A→B→A）は
+    // CHECK では表現できないため、application 層（reparent 操作の事前チェック）
+    // で防ぐ想定（§9 リスク参照）。伝播ロジック側にも防御的なガードを入れてある
+    // （lib/scheduling/propagate.ts の computeDepths）。
+    check(
+      "tasks_no_self_parent_check",
+      sql`${table.parentId} IS NULL OR ${table.parentId} != ${table.id}`,
+    ),
   ],
 );
 
@@ -167,5 +187,11 @@ export const taskDependencies = sqliteTable(
     ),
     // 初版は FS 固定（§4.3）。SS/FF/SF を追加するときはここも合わせて変更する。
     check("task_dependencies_type_check", sql`${table.type} IN ('FS')`),
+    // タスクが自分自身に依存するのを防ぐ（伝播ロジックの wouldCreateCycle も
+    // 自己参照をサイクル扱いするが、DB レベルでも多層防御として持つ）。
+    check(
+      "task_dependencies_no_self_reference",
+      sql`${table.predecessorId} != ${table.successorId}`,
+    ),
   ],
 );

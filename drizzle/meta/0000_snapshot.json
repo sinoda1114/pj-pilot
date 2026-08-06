@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "799d18f8-5788-4604-a3d4-23bf72619130",
+  "id": "0c746449-ee6f-4075-b009-480e7bef8020",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "project_members": {
@@ -291,6 +291,10 @@
         "task_dependencies_type_check": {
           "name": "task_dependencies_type_check",
           "value": "\"task_dependencies\".\"type\" IN ('FS')"
+        },
+        "task_dependencies_no_self_reference": {
+          "name": "task_dependencies_no_self_reference",
+          "value": "\"task_dependencies\".\"predecessor_id\" != \"task_dependencies\".\"successor_id\""
         }
       }
     },
@@ -484,6 +488,22 @@
         "tasks_type_check": {
           "name": "tasks_type_check",
           "value": "\"tasks\".\"type\" IN ('task', 'summary', 'milestone')"
+        },
+        "tasks_progress_check": {
+          "name": "tasks_progress_check",
+          "value": "\"tasks\".\"progress\" BETWEEN 0 AND 100"
+        },
+        "tasks_estimated_hours_check": {
+          "name": "tasks_estimated_hours_check",
+          "value": "\"tasks\".\"estimated_hours\" IS NULL OR \"tasks\".\"estimated_hours\" >= 0"
+        },
+        "tasks_actual_hours_check": {
+          "name": "tasks_actual_hours_check",
+          "value": "\"tasks\".\"actual_hours\" IS NULL OR \"tasks\".\"actual_hours\" >= 0"
+        },
+        "tasks_no_self_parent_check": {
+          "name": "tasks_no_self_parent_check",
+          "value": "\"tasks\".\"parent_id\" IS NULL OR \"tasks\".\"parent_id\" != \"tasks\".\"id\""
         }
       }
     }
