@@ -42,31 +42,40 @@ describe("requireProjectOwner", () => {
 
   it("role='owner' のメンバーは許可される（例外を投げない）", async () => {
     const [project] = await handle.db.insert(projects).values({ name: "P" }).returning();
+    if (!project) {
+      throw new Error("Failed to create test project");
+    }
     await handle.db
       .insert(projectMembers)
-      .values({ projectId: project!.id, userId: "owner-1", role: "owner" });
+      .values({ projectId: project.id, userId: "owner-1", role: "owner" });
 
     await expect(
-      requireProjectOwner(handle.db, { userId: "owner-1" }, project!.id),
+      requireProjectOwner(handle.db, { userId: "owner-1" }, project.id),
     ).resolves.toBeUndefined();
   });
 
   it("role='member' は ForbiddenError を投げる（決定 D-15: PJ削除等はownerのみ）", async () => {
     const [project] = await handle.db.insert(projects).values({ name: "P" }).returning();
+    if (!project) {
+      throw new Error("Failed to create test project");
+    }
     await handle.db
       .insert(projectMembers)
-      .values({ projectId: project!.id, userId: "member-1", role: "member" });
+      .values({ projectId: project.id, userId: "member-1", role: "member" });
 
     await expect(
-      requireProjectOwner(handle.db, { userId: "member-1" }, project!.id),
+      requireProjectOwner(handle.db, { userId: "member-1" }, project.id),
     ).rejects.toThrow(ForbiddenError);
   });
 
   it("PJ に所属していないユーザーは ForbiddenError を投げる", async () => {
     const [project] = await handle.db.insert(projects).values({ name: "P" }).returning();
+    if (!project) {
+      throw new Error("Failed to create test project");
+    }
 
     await expect(
-      requireProjectOwner(handle.db, { userId: "outsider" }, project!.id),
+      requireProjectOwner(handle.db, { userId: "outsider" }, project.id),
     ).rejects.toThrow(ForbiddenError);
   });
 
