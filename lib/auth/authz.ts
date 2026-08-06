@@ -30,6 +30,10 @@ export function requireLogin(session: AuthSession | null): AuthSession {
 /**
  * 指定した PJ の role='owner' メンバーであることを確認する。
  * メンバーでない、または role が 'owner' でなければ ForbiddenError を投げる。
+ *
+ * `projects.deletedAt`（論理削除）は見ない。削除済み PJ に対する復元・完全削除等の
+ * 操作を owner に許すかどうかは呼び出し側（該当 Server Action）の責務とする
+ * （Devin レビュー指摘。M2 以降、実際の呼び出し箇所ができた時点で判断する）。
  */
 export async function requireProjectOwner(
   db: LibSQLDatabase<typeof schema>,

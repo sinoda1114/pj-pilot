@@ -16,7 +16,21 @@ const SEED_OWNER_USER_ID = "seed-owner";
 const SEED_MEMBER_USER_ID = "seed-member";
 
 async function main() {
-  const { db, client } = createDb();
+  const resolvedUrl = process.env.TURSO_DATABASE_URL ?? "file:local.db";
+
+  // ローカルのファイル DB 以外（＝リモートの Turso）への実行はデフォルトで拒否する。
+  // 開発機の .env.local に本番/ステージングの URL が入っている状態で誤って
+  // `npm run db:seed` を叩くと、ダミーデータを本番に投入してしまうため
+  // （Devin レビュー指摘）。
+  if (!resolvedUrl.startsWith("file:") && process.env.ALLOW_REMOTE_SEED !== "true") {
+    throw new Error(
+      "TURSO_DATABASE_URL がローカルのファイル DB を指していません。" +
+        "誤って本番/ステージングにダミーデータを投入しないためのガードです。" +
+        "意図している場合は環境変数 ALLOW_REMOTE_SEED=true を設定してください。",
+    );
+  }
+
+  const { db, client } = createDb(resolvedUrl);
 
   try {
     await seed(db);
@@ -56,49 +70,61 @@ async function seed(db: ReturnType<typeof createDb>["db"]) {
     throw new Error("サマリータスクの作成に失敗しました");
   }
 
-  const [design, dev, testTask, milestone] = await db
+  // SQLite の RETURNING は複数行 INSERT の場合に行の順序を保証しないため
+  // （Devin レビュー指摘）、1件ずつ INSERT して返り値を直接紐付ける。
+  const [design] = await db
     .insert(tasks)
-    .values([
-      {
-        projectId: project.id,
-        parentId: summary.id,
-        title: "要件定義・設計",
-        startDate: "2026-08-10",
-        endDate: "2026-08-17",
-        priority: "high",
-        status: "in_progress",
-        estimatedHours: 40,
-        sortOrder: 0,
-      },
-      {
-        projectId: project.id,
-        parentId: summary.id,
-        title: "実装",
-        startDate: "2026-08-18",
-        endDate: "2026-09-14",
-        priority: "high",
-        estimatedHours: 120,
-        sortOrder: 1,
-      },
-      {
-        projectId: project.id,
-        parentId: summary.id,
-        title: "テスト",
-        startDate: "2026-09-15",
-        endDate: "2026-09-25",
-        estimatedHours: 40,
-        sortOrder: 2,
-      },
-      {
-        projectId: project.id,
-        parentId: summary.id,
-        title: "リリース",
-        type: "milestone",
-        startDate: "2026-09-30",
-        endDate: "2026-09-30",
-        sortOrder: 3,
-      },
-    ])
+    .values({
+      projectId: project.id,
+      parentId: summary.id,
+      title: "要件定義・設計",
+      startDate: "2026-08-10",
+      endDate: "2026-08-17",
+      priority: "high",
+      status: "in_progress",
+      estimatedHours: 40,
+      sortOrder: 0,
+    })
+    .returning();
+
+  const [dev] = await db
+    .insert(tasks)
+    .values({
+      projectId: project.id,
+      parentId: summary.id,
+      title: "実装",
+      startDate: "2026-08-18",
+      endDate: "2026-09-14",
+      priority: "high",
+      estimatedHours: 120,
+      sortOrder: 1,
+    })
+    .returning();
+
+  const [testTask] = await db
+    .insert(tasks)
+    .values({
+      projectId: project.id,
+      parentId: summary.id,
+      title: "テスト",
+      startDate: "2026-09-15",
+      endDate: "2026-09-25",
+      estimatedHours: 40,
+      sortOrder: 2,
+    })
+    .returning();
+
+  const [milestone] = await db
+    .insert(tasks)
+    .values({
+      projectId: project.id,
+      parentId: summary.id,
+      title: "リリース",
+      type: "milestone",
+      startDate: "2026-09-30",
+      endDate: "2026-09-30",
+      sortOrder: 3,
+    })
     .returning();
 
   if (!design || !dev || !testTask || !milestone) {
