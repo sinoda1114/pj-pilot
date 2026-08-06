@@ -431,3 +431,42 @@ describe("moveTask: 性能回帰検知", () => {
     expect(elapsed).toBeLessThan(50);
   });
 });
+
+describe("moveTask: 不整合データへの防御", () => {
+  it("parentId が循環していてもスタックオーバーフローせず完了する", () => {
+    // データ不整合（本来はアプリ層で作れないはずの循環）を想定した回帰テスト。
+    const tasks = [
+      task({ id: "A", parentId: "B", startDate: "2026-08-03", endDate: "2026-08-05" }),
+      task({ id: "B", parentId: "A", startDate: "2026-08-03", endDate: "2026-08-05" }),
+    ];
+
+    expect(() =>
+      moveTask({
+        taskId: "A",
+        deltaDays: 1,
+        tasks,
+        dependencies: [],
+        dependencySyncEnabled: true,
+      }),
+    ).not.toThrow();
+  });
+
+  it("循環の外側にあるタスクを動かしても、祖先を辿って循環に入った時点で打ち切る", () => {
+    // X → 親 A、A/B は循環。X 自身は循環に含まれないが、祖先探索が循環に踏み込む経路。
+    const tasks = [
+      task({ id: "A", parentId: "B", type: "summary", startDate: "2026-08-03", endDate: "2026-08-05" }),
+      task({ id: "B", parentId: "A", type: "summary", startDate: "2026-08-03", endDate: "2026-08-05" }),
+      task({ id: "X", parentId: "A", startDate: "2026-08-03", endDate: "2026-08-05" }),
+    ];
+
+    expect(() =>
+      moveTask({
+        taskId: "X",
+        deltaDays: 1,
+        tasks,
+        dependencies: [],
+        dependencySyncEnabled: true,
+      }),
+    ).not.toThrow();
+  });
+});

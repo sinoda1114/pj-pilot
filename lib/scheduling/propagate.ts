@@ -93,31 +93,44 @@ function propagateToSuccessors(
 function buildSuccessorMap(dependencies: Dependency[]): Map<string, string[]> {
   const map = new Map<string, string[]>();
   for (const { predecessorId, successorId } of dependencies) {
-    const list = map.get(predecessorId) ?? [];
-    list.push(successorId);
-    map.set(predecessorId, list);
+    if (!map.has(predecessorId)) {
+      map.set(predecessorId, []);
+    }
+    map.get(predecessorId)!.push(successorId);
   }
   return map;
 }
 
-/** タスクの深さ（ルートからの距離）。summary 再計算をボトムアップで処理する順序決めに使う。 */
+/**
+ * タスクの深さ（ルートからの距離）。summary 再計算をボトムアップで処理する順序決めに使う。
+ *
+ * `parentId` はこのモジュールの外側（アプリ層）で作られる WBS 階層であり、依存グラフの
+ * `wouldCreateCycle` のような事前チェックが無い。データ不整合等で循環した親子関係が
+ * 渡された場合でもスタックオーバーフローで丸ごとクラッシュしないよう、探索中のノードを
+ * 記録して循環を検出したら深さ 0 として打ち切る。
+ */
 function computeDepths(tasks: ScheduleTask[]): Map<string, number> {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const depths = new Map<string, number>();
 
-  function depthOf(id: string): number {
+  function depthOf(id: string, visiting: Set<string>): number {
     const cached = depths.get(id);
     if (cached !== undefined) {
       return cached;
     }
+    if (visiting.has(id)) {
+      return 0; // 循環した parentId チェーン。これ以上遡らない。
+    }
+    visiting.add(id);
+
     const t = byId.get(id);
-    const depth = t?.parentId ? depthOf(t.parentId) + 1 : 0;
+    const depth = t?.parentId ? depthOf(t.parentId, visiting) + 1 : 0;
     depths.set(id, depth);
     return depth;
   }
 
   for (const t of tasks) {
-    depthOf(t.id);
+    depthOf(t.id, new Set());
   }
   return depths;
 }
@@ -135,8 +148,12 @@ function recomputeAncestorSummaries(
 ): { dateChanges: TaskChange[]; summaryUpdates: SummaryAggregate[] } {
   const ancestorIds = new Set<string>();
   for (const id of changedIds) {
+    const visited = new Set<string>([id]);
     let parentId = tasksById.get(id)?.parentId ?? null;
-    while (parentId) {
+    // parentId が循環している不整合データでも無限ループしないよう、訪問済みで打ち切る
+    // （computeDepths の depthOf と同じ理由。§9 参照）。
+    while (parentId && !visited.has(parentId)) {
+      visited.add(parentId);
       ancestorIds.add(parentId);
       parentId = tasksById.get(parentId)?.parentId ?? null;
     }
@@ -201,9 +218,10 @@ function buildChildrenMap(tasks: ScheduleTask[]): Map<string, string[]> {
     if (!t.parentId) {
       continue;
     }
-    const list = map.get(t.parentId) ?? [];
-    list.push(t.id);
-    map.set(t.parentId, list);
+    if (!map.has(t.parentId)) {
+      map.set(t.parentId, []);
+    }
+    map.get(t.parentId)!.push(t.id);
   }
   return map;
 }
