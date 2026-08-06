@@ -278,5 +278,74 @@ describe("tasks/service", () => {
 
       expect(updated.parentId).toBeNull();
     });
+
+    it("マスアサインメント対策: 型に無い projectId が混入しても他プロジェクトへ移動しない（セキュリティレビュー指摘）", async () => {
+      const [otherProject] = await handle.db.insert(projects).values({ name: "他PJ" }).returning();
+      if (!otherProject) {
+        throw new Error("Failed to create other project");
+      }
+      const task = await createTask(handle.db, SESSION, projectId, {
+        title: "T",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      // UpdateTaskInput はコンパイル時の型でしかなく、将来 Server Action が
+      // ランタイム検証を省略した場合を想定した攻撃シナリオ: projectId を
+      // smuggle して、createTask 時点の同一プロジェクト検証を経ずに
+      // タスクを別プロジェクトへ移動しようとするケース。
+      const maliciousInput = {
+        title: "改ざん後",
+        projectId: otherProject.id,
+      } as unknown as Parameters<typeof updateTask>[3];
+
+      const updated = await updateTask(handle.db, SESSION, task.id, maliciousInput);
+
+      expect(updated.title).toBe("改ざん後");
+      expect(updated.projectId).toBe(projectId);
+    });
+
+    it("マスアサインメント対策: 型に無い deletedAt が混入しても復活しない（セキュリティレビュー指摘）", async () => {
+      const task = await createTask(handle.db, SESSION, projectId, {
+        title: "T",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      const maliciousInput = {
+        title: "改ざん後",
+        deletedAt: new Date(),
+      } as unknown as Parameters<typeof updateTask>[3];
+
+      const updated = await updateTask(handle.db, SESSION, task.id, maliciousInput);
+
+      expect(updated.deletedAt).toBeNull();
+    });
+  });
+
+  describe("createTask マスアサインメント対策（セキュリティレビュー指摘）", () => {
+    it("型に無い id が混入しても、指定した id ではなく自動生成の id が使われる", async () => {
+      const maliciousInput = {
+        id: "attacker-chosen-id",
+        title: "T",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      } as unknown as Parameters<typeof createTask>[3];
+
+      const task = await createTask(handle.db, SESSION, projectId, maliciousInput);
+
+      expect(task.id).not.toBe("attacker-chosen-id");
+    });
+
+    it("型に無い deletedAt が混入しても、削除済み状態では作成されない", async () => {
+      const maliciousInput = {
+        title: "T",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        deletedAt: new Date(),
+      } as unknown as Parameters<typeof createTask>[3];
+
+      const task = await createTask(handle.db, SESSION, projectId, maliciousInput);
+
+      expect(task.deletedAt).toBeNull();
+    });
   });
 });

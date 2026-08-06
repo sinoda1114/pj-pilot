@@ -79,12 +79,24 @@ export async function updateProject(
     throw new NotFoundError("プロジェクトが見つかりません");
   }
 
-  // 更新項目が1つも無い（`{}` や全キーが undefined）と Drizzle が
-  // "No values to set" で例外を投げるため、その場合は DB に触らず既存の状態を返す
-  // （Amazon Q レビュー指摘: `{ name: undefined }` は Object.keys では検出できない）。
-  const updates = Object.fromEntries(
-    Object.entries(input).filter(([, value]) => value !== undefined),
-  );
+  // input をそのまま .set() に渡さず、許可したキーだけを明示的に拾う。
+  // UpdateProjectInput はコンパイル時の型でしかなく、将来 Server Action が
+  // ランタイム検証（zod等）を省略して生の入力をそのまま渡した場合、
+  // 型に無い deletedAt / createdAt 等を紛れ込ませて上書きされる
+  // マスアサインメントを防ぐため（セキュリティレビュー指摘）。
+  const updates: UpdateProjectInput = {};
+  if (input.name !== undefined) {
+    updates.name = input.name;
+  }
+  if (input.description !== undefined) {
+    updates.description = input.description;
+  }
+  if (input.dependencySyncEnabled !== undefined) {
+    updates.dependencySyncEnabled = input.dependencySyncEnabled;
+  }
+
+  // 更新項目が1つも無いと Drizzle が "No values to set" で例外を投げるため、
+  // その場合は DB に触らず既存の状態を返す（Amazon Q レビュー指摘）。
   if (Object.keys(updates).length === 0) {
     return existing;
   }

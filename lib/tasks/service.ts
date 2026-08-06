@@ -52,6 +52,43 @@ export type UpdateTaskInput = Partial<
   >
 >;
 
+/**
+ * ユーザーが編集してよいカラムの許可リスト。`projectId` / `id` / `deletedAt` /
+ * `createdAt` / `updatedAt` は含めない。
+ *
+ * `input` をそのまま `.values()`/`.set()` に渡さずここを通すのは、
+ * `CreateTaskInput`/`UpdateTaskInput` がコンパイル時の型でしかなく、将来
+ * Server Action がランタイム検証（zod等）を省略して生の入力をそのまま渡した場合、
+ * 型に無い `projectId` や `deletedAt` を紛れ込ませて上書きされるマスアサインメントを
+ * 防ぐため（セキュリティレビュー指摘）。
+ */
+const EDITABLE_TASK_FIELDS = [
+  "title",
+  "startDate",
+  "endDate",
+  "parentId",
+  "priority",
+  "status",
+  "type",
+  "progress",
+  "estimatedHours",
+  "actualHours",
+  "isPinned",
+  "sortOrder",
+] as const;
+
+function pickEditableTaskFields(
+  input: CreateTaskInput | UpdateTaskInput,
+): Partial<Pick<TaskRow, (typeof EDITABLE_TASK_FIELDS)[number]>> {
+  const picked: Partial<Pick<TaskRow, (typeof EDITABLE_TASK_FIELDS)[number]>> = {};
+  for (const key of EDITABLE_TASK_FIELDS) {
+    if (input[key] !== undefined) {
+      (picked as Record<string, unknown>)[key] = input[key];
+    }
+  }
+  return picked;
+}
+
 export async function listTasks(
   db: LibSQLDatabase<typeof schema>,
   session: AuthSession | null,
@@ -109,7 +146,15 @@ export async function createTask(
 
   const [task] = await db
     .insert(tasks)
-    .values({ ...input, projectId })
+    .values({
+      ...pickEditableTaskFields(input),
+      // 必須列は CreateTaskInput の型で保証されているのを明示的にも保つ
+      // （pickEditableTaskFields の戻り値は update 側と共通化するため Partial 型）。
+      title: input.title,
+      startDate: input.startDate,
+      endDate: input.endDate,
+      projectId,
+    })
     .returning();
 
   if (!task) {
@@ -151,9 +196,7 @@ export async function updateTask(
     }
   }
 
-  const updates = Object.fromEntries(
-    Object.entries(input).filter(([, value]) => value !== undefined),
-  );
+  const updates = pickEditableTaskFields(input);
   if (Object.keys(updates).length === 0) {
     return existing;
   }

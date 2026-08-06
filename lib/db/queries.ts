@@ -17,7 +17,7 @@ import type * as schema from "./schema";
  * `LibSQLDatabase` ではなく `SQLiteTransaction`（`batch` を持たない）になるため。
  * ここで使うクエリはどちらの型にも共通する部分だけなので、両方から呼べるようにする。
  */
-type Db = BaseSQLiteDatabase<"async", ResultSet, typeof schema>;
+export type Db = BaseSQLiteDatabase<"async", ResultSet, typeof schema>;
 
 export async function listActiveProjects(db: Db) {
   return db.select().from(projects).where(isNull(projects.deletedAt));

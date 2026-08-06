@@ -153,6 +153,25 @@ describe("projects/service", () => {
         NotFoundError,
       );
     });
+
+    it("マスアサインメント対策: 型に無いキー（deletedAt/createdAt）が混入しても無視する（セキュリティレビュー指摘）", async () => {
+      const project = await createProject(handle.db, OWNER, { name: "元の名前" });
+      // UpdateProjectInput はコンパイル時の型でしかなく、将来 Server Action が
+      // ランタイム検証を省略して生の入力をそのまま渡した場合を想定した攻撃シナリオ:
+      // owner でないメンバーが deletedAt を smuggle して、owner 限定のはずの
+      // 削除操作を updateProject 経由でバイパスしようとするケース。
+      const maliciousInput = {
+        name: "更新後の名前",
+        deletedAt: new Date(),
+        createdAt: new Date(0),
+      } as unknown as Parameters<typeof updateProject>[3];
+
+      const updated = await updateProject(handle.db, OTHER_MEMBER, project.id, maliciousInput);
+
+      expect(updated.name).toBe("更新後の名前");
+      expect(updated.deletedAt).toBeNull();
+      expect(updated.createdAt.getTime()).toBe(project.createdAt.getTime());
+    });
   });
 
   describe("deleteProject", () => {
