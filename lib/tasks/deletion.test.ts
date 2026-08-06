@@ -16,6 +16,7 @@ import {
   restoreTask,
 } from "./deletion";
 import { HasChildrenError } from "./errors";
+import { createTask } from "./service";
 
 const SESSION = { userId: "u1" };
 
@@ -90,6 +91,30 @@ describe("tasks/deletion", () => {
 
       const result = await getTaskById(handle.db, parent.id);
       expect(result?.deletedAt).toBeNull();
+    });
+
+    it("トランザクション: 並行して子タスクが作られても「アクティブな子を持つ削除済みタスク」にはならない（セキュリティレビュー指摘の TOCTOU 対策の検証）", async () => {
+      const parent = await insertTask({ title: "親" });
+
+      await Promise.allSettled([
+        deleteTask(handle.db, SESSION, parent.id),
+        createTask(handle.db, SESSION, projectId, {
+          title: "並行して作られる子",
+          startDate: "2026-08-01",
+          endDate: "2026-08-05",
+          parentId: parent.id,
+        }),
+      ]);
+
+      const parentAfter = await getTaskById(handle.db, parent.id);
+      const children = await handle.db.select().from(tasks).where(eq(tasks.parentId, parent.id));
+      const activeChildren = children.filter((child) => child.deletedAt === null);
+
+      // 親が削除されているなら、アクティブな子が存在してはいけない
+      // （逆に子が作られたなら、親の削除は HasChildrenError で失敗しているはず）。
+      if (parentAfter?.deletedAt !== null) {
+        expect(activeChildren).toHaveLength(0);
+      }
     });
 
     it("論理削除済みの子は「子を持つ」とみなさない", async () => {
