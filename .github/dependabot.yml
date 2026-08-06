@@ -4,3 +4,14 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    ignore:
+      # eslint-config-next@16.3.0 が内部で束ねる eslint-plugin-react が
+      # ESLint 10 の新しいルール API に未対応（`contextOrFilename.getFilename is not a function`
+      # で lint が全面的に落ちる）。upstream が追随するまで major バンプを止める。
+      - dependency-name: "eslint"
+        versions: [">=10.0.0"]
+      # typescript-eslint が TypeScript 7.0（新しいネイティブコンパイラ系）に未対応
+      # （"typescript-eslint does not support TS 7.0" で lint が起動時に落ちる）。
+      # 追跡: https://github.com/typescript-eslint/typescript-eslint/issues/10940
+      - dependency-name: "typescript"
+        versions: [">=7.0.0"]
