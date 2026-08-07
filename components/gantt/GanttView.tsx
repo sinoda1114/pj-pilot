@@ -300,9 +300,15 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
   // `null.forEach` で例外を投げて画面がクラッシュする（実機確認済み）。
   // 実際に子を持つタスク（他タスクの `parentId` として参照されている ID）だけに絞る。
   const parentIds = new Set(taskRows.map((task) => task.parentId).filter((id) => id !== null));
-  const ganttTasks = toGanttTasks(taskRows).map((task) =>
-    parentIds.has(String(task.id)) ? { ...task, open: true } : task,
-  );
+  // M5 #30: ピン留めの視覚表現。グリッド列の `template` にはSVAR内部で正規化された
+  // 行データが渡ってきて、`isPinned` のようなカスタムフィールドが残っていない
+  // （実機確認済み。テキストの頭に📌を付ける表示にならなかった）。
+  // そのため、SVARへ渡す前の `text` フィールド自体に絵文字を埋め込む（`open` と
+  // 同じく、このビュー層で SVAR 渡し用のタスクデータを加工する既存の方式）。
+  const ganttTasks = toGanttTasks(taskRows).map((task) => {
+    const withOpen = parentIds.has(String(task.id)) ? { ...task, open: true } : task;
+    return task.isPinned ? { ...withOpen, text: `📌 ${withOpen.text}` } : withOpen;
+  });
   const ganttLinks = toGanttLinks(dependencyRows);
 
   // `Gantt` 自体はバー/依存線の配色に使う `--wx-gantt-*` 系 CSS 変数を持たない

@@ -55,6 +55,7 @@ export interface TaskFormInput {
   progress?: number;
   estimatedHours?: number | null;
   actualHours?: number | null;
+  isPinned?: boolean;
 }
 
 /**
@@ -111,6 +112,9 @@ function assertValidTaskFormInput(input: unknown): asserts input is TaskFormInpu
     ) {
       throw new ActionInputError("工数は0以上の数値で入力してください");
     }
+  }
+  if (value.isPinned !== undefined && typeof value.isPinned !== "boolean") {
+    throw new ActionInputError("ピン留めの指定が不正です");
   }
 }
 
@@ -175,6 +179,7 @@ export async function createTaskAction(
       progress: input.progress,
       estimatedHours: input.estimatedHours ?? undefined,
       actualHours: input.actualHours ?? undefined,
+      isPinned: input.isPinned,
     });
 
     if (userIds.length > 0) {
@@ -212,6 +217,7 @@ export async function updateTaskAction(
       // `?? null` にすると省略時まで毎回クリア扱いになり、部分更新の意味が壊れる。
       estimatedHours: input.estimatedHours,
       actualHours: input.actualHours,
+      isPinned: input.isPinned,
     });
 
     await setTaskAssignees(db, session, taskId, userIds);

@@ -31,6 +31,8 @@ export interface DbTaskLike {
   endDate: string;
   progress: number;
   type: GanttTaskType;
+  /** M5 #30: ピン留め。Gantt上でタスク名列に📌を表示する視覚表現に使う。 */
+  isPinned: boolean;
 }
 
 export interface DbDependencyLike {
@@ -47,6 +49,7 @@ export interface GanttTaskInput {
   end: Date;
   progress: number;
   type: GanttTaskType;
+  isPinned: boolean;
 }
 
 export interface GanttLinkInput {
@@ -69,6 +72,7 @@ export function toGanttTasks(tasks: DbTaskLike[]): GanttTaskInput[] {
     end: toGanttEndDate(task.endDate),
     progress: task.progress,
     type: task.type,
+    isPinned: task.isPinned,
   }));
 }
 

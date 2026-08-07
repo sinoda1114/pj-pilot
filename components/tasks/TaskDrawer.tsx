@@ -25,6 +25,7 @@ import {
   NumberInput,
   Select,
   Stack,
+  Switch,
   TagsInput,
   Text,
   TextInput,
@@ -73,6 +74,7 @@ interface TaskFormValues {
   estimatedHours: number | null;
   actualHours: number | null;
   assignees: string[];
+  isPinned: boolean;
 }
 
 function todayDateOnly(): string {
@@ -96,6 +98,7 @@ function toFormValues(task: Task | null, initialAssignees: string[]): TaskFormVa
       estimatedHours: null,
       actualHours: null,
       assignees: [],
+      isPinned: false,
     };
   }
 
@@ -109,6 +112,7 @@ function toFormValues(task: Task | null, initialAssignees: string[]): TaskFormVa
     estimatedHours: task.estimatedHours,
     actualHours: task.actualHours,
     assignees: initialAssignees,
+    isPinned: task.isPinned,
   };
 }
 
@@ -167,6 +171,7 @@ export function TaskDrawer({
         progress: values.progress,
         estimatedHours: values.estimatedHours,
         actualHours: values.actualHours,
+        isPinned: values.isPinned,
       };
 
       const result =
@@ -346,6 +351,14 @@ export function TaskDrawer({
                   disabled={submitting || deleting}
                 />
               </Group>
+
+              <Switch
+                label="ピン留め"
+                description="ONにすると、依存する先行タスクを動かしてもこのタスクは連動して動かなくなります（Gantt上で📌が表示されます）。"
+                checked={form.values.isPinned}
+                onChange={(event) => form.setFieldValue("isPinned", event.currentTarget.checked)}
+                disabled={submitting || deleting}
+              />
 
               <TagsInput
                 label="担当者"

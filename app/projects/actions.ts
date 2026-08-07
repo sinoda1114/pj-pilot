@@ -74,6 +74,7 @@ export async function createProjectAction(input: CreateProjectActionInput): Prom
 export interface UpdateProjectActionInput {
   name?: string;
   description?: string | null;
+  dependencySyncEnabled?: boolean;
 }
 
 export async function updateProjectAction(
@@ -101,6 +102,17 @@ export async function updateProjectAction(
     updates.description = description || null;
   }
 
+  if (input.dependencySyncEnabled !== undefined) {
+    // Server Action は直接呼び出し可能な公開エンドポイントでもあるため、
+    // TypeScript の型注釈（コンパイル時のみ）を信頼せず、ここでランタイム検証する
+    // （`app/projects/[id]/tasks/actions.ts` の `isPinned` 検証と同じ方針。
+    // セキュリティレビュー指摘）。
+    if (typeof input.dependencySyncEnabled !== "boolean") {
+      return { ok: false, message: "依存連動の指定が不正です" };
+    }
+    updates.dependencySyncEnabled = input.dependencySyncEnabled;
+  }
+
   try {
     const session = await getSession();
     await updateProject(db, session, projectId, updates);
@@ -109,7 +121,7 @@ export async function updateProjectAction(
   }
 
   revalidatePath("/projects");
-  // タスク/Gantt/ゴミ箱の各タブが共有するレイアウト（ヘッダーのPJ名）もまとめて再検証する。
+  // タスク/Gantt/ゴミ箱/設定の各タブが共有するレイアウト（ヘッダーのPJ名）もまとめて再検証する。
   revalidatePath(`/projects/${projectId}`, "layout");
   return { ok: true };
 }

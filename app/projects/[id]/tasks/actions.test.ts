@@ -14,7 +14,7 @@ import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, type DbHandle } from "../../../../lib/db/client";
-import { projects, taskAssignees } from "../../../../lib/db/schema";
+import { projects, taskAssignees, tasks } from "../../../../lib/db/schema";
 import type { AuthSession } from "../../../../lib/auth/types";
 
 const state = vi.hoisted(() => ({
@@ -174,6 +174,37 @@ describe("app/projects/[id]/tasks/actions", () => {
         .where(eq(taskAssignees.taskId, result.taskId));
       expect(assignees.map((a) => a.userId).sort()).toEqual(["alice", "bob"]);
     });
+
+    it("M5 #30: isPinned:true を指定するとピン留めされた状態で作成される", async () => {
+      state.session = { userId: "u1" };
+      const result = await createTaskAction(
+        projectId,
+        { title: "ピン留めタスク", startDate: "2026-08-01", endDate: "2026-08-05", isPinned: true },
+        [],
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok || !result.taskId) {
+        throw new Error("unreachable");
+      }
+
+      const [created] = await handle.db.select().from(tasks).where(eq(tasks.id, result.taskId));
+      expect(created?.isPinned).toBe(true);
+    });
+
+    it("M5 #30: isPinned に真偽値以外を渡すと ok:false を返す", async () => {
+      state.session = { userId: "u1" };
+      const result = await createTaskAction(
+        projectId,
+        {
+          title: "T",
+          startDate: "2026-08-01",
+          endDate: "2026-08-05",
+          isPinned: "yes",
+        },
+        [],
+      );
+      expect(result).toEqual({ ok: false, message: "ピン留めの指定が不正です" });
+    });
   });
 
   describe("updateTaskAction", () => {
@@ -217,6 +248,29 @@ describe("app/projects/[id]/tasks/actions", () => {
         .from(taskAssignees)
         .where(eq(taskAssignees.taskId, created.taskId));
       expect(assignees.map((a) => a.userId)).toEqual(["carol"]);
+    });
+
+    it("M5 #30: isPinned を更新できる", async () => {
+      state.session = { userId: "u1" };
+      const created = await createTaskAction(
+        projectId,
+        { title: "元タイトル", startDate: "2026-08-01", endDate: "2026-08-05" },
+        [],
+      );
+      if (!created.ok || !created.taskId) {
+        throw new Error("unreachable");
+      }
+
+      const result = await updateTaskAction(
+        projectId,
+        created.taskId,
+        { title: "元タイトル", startDate: "2026-08-01", endDate: "2026-08-05", isPinned: true },
+        [],
+      );
+      expect(result).toEqual({ ok: true });
+
+      const [updated] = await handle.db.select().from(tasks).where(eq(tasks.id, created.taskId));
+      expect(updated?.isPinned).toBe(true);
     });
   });
 
