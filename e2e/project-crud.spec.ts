@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { createLoggedInSession } from "./helpers/auth";
 
 /**
  * M2 #13: プロジェクトの作成 → 一覧表示 → 編集 → 削除の一連のフローを検証する。
@@ -8,7 +9,12 @@ import { test, expect } from "@playwright/test";
  * カード内の「編集」「削除」ボタンは `data-testid` に project.id を含めて
  * 一意化してあるため、一覧リンクの href から id を取り出して対象を絞り込む。
  */
-test("プロジェクトの作成・編集・削除が一気通貫で行える", async ({ page }) => {
+test("プロジェクトの作成・編集・削除が一気通貫で行える", async ({ page, context }) => {
+  await createLoggedInSession(context, {
+    email: "e2e-project-crud@example.com",
+    name: "E2E Project CRUD",
+  });
+
   const uniqueSuffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
   const createdName = `E2Eテストプロジェクト ${uniqueSuffix}`;
   const renamedName = `E2Eテストプロジェクト（編集後） ${uniqueSuffix}`;

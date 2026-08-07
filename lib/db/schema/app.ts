@@ -2,11 +2,14 @@
  * アプリケーションドメインのスキーマ（docs/IMPLEMENTATION_PLAN.md §4）。
  *
  * 認証まわり（user / session / account / verification）はここに含めない。
- * `@better-auth/cli generate` の出力を別ファイルとして追加する予定だが、
- * 2026-08-06 時点で better-auth 本体に未修正の Critical 脆弱性
- * （OAuth 関連、修正版未公開）があるため導入を保留している。
- * 認証実装まではユーザー参照カラムを外部キー制約なしの text で持ち、
- * 認証テーブルが追加され次第 FK を張るマイグレーションを別途行う。
+ * `lib/db/schema/auth.ts`（`npx auth@1.6.26 generate` の出力）に分離している。
+ *
+ * `project_members.userId` / `task_assignees.userId` は依然として外部キー
+ * 制約なしの text のまま（本PRでは追加しない）。既存シードデータ
+ * （`scripts/seed.ts` の `"seed-owner"`/`"seed-member"`）が実際の
+ * `user.id`（Better Authが発行する値）と一致しないため、`scripts/seed.ts` を
+ * 実ユーザー作成ベースに書き換えるのと同じタイミングでFKを追加する
+ * フォローアップ課題として切り出す。
  */
 
 import { sql } from "drizzle-orm";

@@ -20,8 +20,8 @@ import {
 import { ModalsProvider } from "@mantine/modals";
 import { Notifications } from "@mantine/notifications";
 import { DatesLocaleProvider } from "../components/providers/DatesLocaleProvider";
-import { DevUserSwitcher } from "../components/dev/DevUserSwitcher";
-import { getSession } from "../lib/auth/session";
+import { UserMenu } from "../components/auth/UserMenu";
+import { getFullSession } from "../lib/auth/session";
 
 export const metadata: Metadata = {
   title: "pj-pilot",
@@ -33,7 +33,12 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const session = await getSession();
+  // ヘッダーの表示専用（名前/email）。`getSession()` が返す `AuthSession` は
+  // `userId` のみのため、表示情報が必要なここだけ生セッションを直接見る
+  // （`lib/auth/session.ts` 参照）。ドメイン制限のチェックは行わないが、
+  // 表示専用でありデータアクセスには使わないため問題ない
+  // （実際の認可は各ページの `requireLogin(await getSession())` が担う）。
+  const fullSession = await getFullSession();
 
   return (
     <html lang="ja" {...mantineHtmlProps}>
@@ -49,7 +54,9 @@ export default async function RootLayout({
                 <AppShellHeader>
                   <Group h="100%" px="md" justify="space-between">
                     <Text fw={700}>pj-pilot</Text>
-                    {session ? <DevUserSwitcher currentUserId={session.userId} /> : null}
+                    {fullSession ? (
+                      <UserMenu name={fullSession.user.name} email={fullSession.user.email} />
+                    ) : null}
                   </Group>
                 </AppShellHeader>
                 <AppShellMain>{children}</AppShellMain>
