@@ -92,6 +92,18 @@ export async function listActiveTasksByProject(db: Db, projectId: string) {
 }
 
 /**
+ * 依存連動の伝播（`lib/scheduling/propagate.ts`）用。生存/削除済みを問わず
+ * プロジェクトの全タスクを返す。伝播ロジックは「削除済みタスクに到達したら
+ * 枝を打ち切り、その理由をトーストで通知する」（決定D-06 / §5.4）ため、
+ * 削除済みタスクも `isDeleted: true` として伝播対象のグラフに含めておく
+ * 必要がある。生存タスクだけを渡すと、削除済みタスクがグラフから単に
+ * 存在しなくなるだけで、`skipped` に理由付きで記録できなくなる。
+ */
+export async function listAllTasksByProject(db: Db, projectId: string) {
+  return db.select().from(tasks).where(eq(tasks.projectId, projectId));
+}
+
+/**
  * `task_dependencies` に `deleted_at` は無い（決定 D-06: タスク削除時も依存レコード自体は残す）。
  * そのため生存フィルタは不要で、単純にプロジェクト単位で全件返す。
  */

@@ -22,10 +22,11 @@ const GanttView = dynamic(() => import("./GanttView").then((mod) => mod.GanttVie
 });
 
 export interface GanttLoaderProps {
+  projectId: string;
   tasks: DbTaskLike[];
   dependencies: DbDependencyLike[];
 }
 
-export function GanttLoader({ tasks, dependencies }: GanttLoaderProps) {
-  return <GanttView tasks={tasks} dependencies={dependencies} />;
+export function GanttLoader({ projectId, tasks, dependencies }: GanttLoaderProps) {
+  return <GanttView projectId={projectId} tasks={tasks} dependencies={dependencies} />;
 }

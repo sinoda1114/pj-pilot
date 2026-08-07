@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { fromGanttEndDate, fromGanttStartDate, toGanttLinks, toGanttTasks } from "./transform";
+import {
+  fromGanttEndDate,
+  fromGanttStartDate,
+  toGanttEndDate,
+  toGanttLinks,
+  toGanttStartDate,
+  toGanttTasks,
+} from "./transform";
 
 const ORIGINAL_TZ = process.env.TZ;
 
@@ -170,5 +177,32 @@ describe("fromGanttStartDate / fromGanttEndDate", () => {
 
     expect(fromGanttStartDate(ganttTask!.start)).toBe("2026-08-01");
     expect(fromGanttEndDate(ganttTask!.end)).toBe("2026-08-05");
+  });
+});
+
+describe("toGanttStartDate / toGanttEndDate（M4: ドラッグ確定後のサーバ確定結果の書き戻し用）", () => {
+  it("fromGanttStartDate / fromGanttEndDate と往復で元に戻る", () => {
+    const start = toGanttStartDate("2026-08-10");
+    const end = toGanttEndDate("2026-08-12");
+
+    expect(fromGanttStartDate(start)).toBe("2026-08-10");
+    expect(fromGanttEndDate(end)).toBe("2026-08-12");
+  });
+
+  it("toGanttTasks と同じ変換結果になる（内部で共通のロジックを使っている）", () => {
+    const [ganttTask] = toGanttTasks([
+      {
+        id: "t1",
+        parentId: null,
+        title: "T",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        progress: 0,
+        type: "task",
+      },
+    ]);
+
+    expect(toGanttStartDate("2026-08-01")).toEqual(ganttTask!.start);
+    expect(toGanttEndDate("2026-08-05")).toEqual(ganttTask!.end);
   });
 });
