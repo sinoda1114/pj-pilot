@@ -20,6 +20,11 @@ export default async function ProjectTasksPage({
   const { id: projectId } = await params;
   const session = await getSession();
 
+  const project = await getActiveProject(db, projectId);
+  if (!project) {
+    notFound();
+  }
+
   let taskList: Awaited<ReturnType<typeof listTasks>>;
   try {
     taskList = await listTasks(db, session, projectId);
@@ -29,8 +34,6 @@ export default async function ProjectTasksPage({
     }
     throw error;
   }
-
-  const project = await getActiveProject(db, projectId);
 
   const assigneeLists = await Promise.all(
     taskList.map((task) => listTaskAssignees(db, session, task.id)),
@@ -43,7 +46,7 @@ export default async function ProjectTasksPage({
 
   return (
     <Stack gap="lg">
-      <Title order={2}>{project?.name ?? "タスク一覧"}</Title>
+      <Title order={2}>{project.name}</Title>
       <TasksPageClient projectId={projectId} tasks={taskList} assigneesByTaskId={assigneesByTaskId} />
     </Stack>
   );
