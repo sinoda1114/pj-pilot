@@ -24,6 +24,18 @@ export function ProjectSettingsForm({ projectId, dependencySyncEnabled }: Projec
   const [checked, setChecked] = useState(dependencySyncEnabled);
   const [submitting, setSubmitting] = useState(false);
 
+  // `router.refresh()` 後にサーバから新しい `dependencySyncEnabled` が props として
+  // 渡り直したとき、`checked` へ追従させる（GanttView.tsx の tasks/dependencies 同期と
+  // 同じ、React公式推奨の「レンダー中に前回の props と比較して直接 setState する」
+  // パターン）。予期しない例外（下記 catch）発生時に、DB側の更新が実際には成功して
+  // いたかどうかをクライアント側では判断できないため、決め打ちで元に戻す代わりに
+  // ここでサーバの実際の値に追従させる（Cursor Bugbot指摘）。
+  const [prevDependencySyncEnabled, setPrevDependencySyncEnabled] = useState(dependencySyncEnabled);
+  if (dependencySyncEnabled !== prevDependencySyncEnabled) {
+    setPrevDependencySyncEnabled(dependencySyncEnabled);
+    setChecked(dependencySyncEnabled);
+  }
+
   async function handleChange(value: boolean) {
     const previous = checked;
     setChecked(value);
@@ -42,14 +54,16 @@ export function ProjectSettingsForm({ projectId, dependencySyncEnabled }: Projec
       router.refresh();
     } catch (error) {
       // `updateProjectAction` が予期しない例外を投げた場合（ネットワークエラー等）、
-      // 楽観的に反映した `checked` がDBの実際の値と食い違ったまま残ってしまう
-      // （TaskDrawer.tsx の handleSubmit と同じ catch パターン、Amazon Q レビュー指摘）。
-      setChecked(previous);
+      // その例外がDBへの書き込み後に発生した可能性もあり、ここで無条件に
+      // `setChecked(previous)` すると、実際にはDB更新が成功していたケースで
+      // 表示だけ古い値に戻ってしまう（Cursor Bugbot指摘）。決め打ちで戻さず、
+      // `router.refresh()` でサーバの実際の値を取り直し、上の props 同期に委ねる。
       notifications.show({
         color: "red",
         title: "予期しないエラーが発生しました",
         message: error instanceof Error ? error.message : "しばらくしてから再度お試しください",
       });
+      router.refresh();
     } finally {
       setSubmitting(false);
     }
