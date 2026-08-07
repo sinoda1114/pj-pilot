@@ -1,8 +1,10 @@
 import { notFound } from "next/navigation";
 import { Stack, Title } from "@mantine/core";
+import { ProjectTabs } from "../../../components/projects/ProjectTabs";
+import { requireLogin } from "../../../lib/auth/authz";
+import { getSession } from "../../../lib/auth/session";
 import { db } from "../../../lib/db";
 import { getActiveProject } from "../../../lib/db/queries";
-import { ProjectTabs } from "../../../components/projects/ProjectTabs";
 
 export default async function ProjectLayout({
   children,
@@ -12,6 +14,7 @@ export default async function ProjectLayout({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
+  requireLogin(await getSession());
   const project = await getActiveProject(db, id);
 
   if (!project) {

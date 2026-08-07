@@ -123,5 +123,8 @@ export async function deleteProjectAction(projectId: string): Promise<ActionResu
   }
 
   revalidatePath("/projects");
+  // 削除後にキャッシュされたレイアウト（ヘッダーのPJ名等）が残らないようにする
+  // （updateProjectActionと同様。Bugbot指摘）。
+  revalidatePath(`/projects/${projectId}`, "layout");
   return { ok: true };
 }

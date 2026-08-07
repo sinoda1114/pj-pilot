@@ -3,12 +3,14 @@ import { Card, Group, Stack, Text, Title } from "@mantine/core";
 import { CreateProjectButton } from "../../components/projects/CreateProjectButton";
 import { DeleteProjectButton } from "../../components/projects/DeleteProjectButton";
 import { EditProjectButton } from "../../components/projects/EditProjectButton";
+import { requireLogin } from "../../lib/auth/authz";
 import { getSession } from "../../lib/auth/session";
 import { db } from "../../lib/db";
 import { listProjects } from "../../lib/projects/service";
 
 export default async function ProjectsPage() {
   const session = await getSession();
+  requireLogin(session);
   const projectList = await listProjects(db, session);
 
   return (
