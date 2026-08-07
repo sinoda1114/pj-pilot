@@ -194,11 +194,26 @@ export function TasksPageClient({ projectId, tasks, assigneesByTaskId }: TasksPa
         <Button onClick={() => setDrawerState({ mode: "create" })}>新規タスク作成</Button>
       </Group>
 
+      {/*
+        列数が多く（タイトル/ステータス/優先度/担当者/開始日/終了日/進捗の7列）、
+        `width` を指定していないため、狭い画面幅では各列が個別に縮んで見出しの
+        文字が1文字ずつ縦積みになり読めなくなる（実機のスクリーンショットで確認済み、
+        M6 #35）。`mantine-datatable` の `style` は内部の `<table>` ではなく
+        最外殻のルート要素（`ScrollArea` を含む）に適用されるため、そこに
+        `minWidth` を与えるとルート自体が幅を持ってしまい、内部の
+        `ScrollArea` ではなくページ全体が横スクロールしてしまう
+        （Devin Reviewの指摘どおり、実機で `document.body.scrollWidth` が
+        375→716 になることを確認済み）。`styles={{ table: {...} }}` で
+        `<table>` 要素自体に `minWidth` を与えることで、`ScrollArea` の
+        ビューポート幅（=ルート要素の幅、親に収まる）はそのままに、内部の
+        テーブルだけが横に広がり、`ScrollArea` が正しく横スクロールを担う。
+      */}
       <DataTable<Task>
         withTableBorder
         borderRadius="sm"
         highlightOnHover
         minHeight={200}
+        styles={{ table: { minWidth: 700 } }}
         records={records}
         columns={columns}
         sortStatus={sortStatus}
