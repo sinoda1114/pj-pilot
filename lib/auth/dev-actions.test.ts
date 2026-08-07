@@ -20,9 +20,9 @@ describe("setDevUser", () => {
   });
 
   it("既知の開発用ユーザーIDならCookieに設定する", async () => {
-    await setDevUser("dev-member");
+    await setDevUser("seed-member");
 
-    expect(cookieStore.get("pj-pilot-dev-user")).toBe("dev-member");
+    expect(cookieStore.get("pj-pilot-dev-user")).toBe("seed-member");
   });
 
   it("未知のユーザーIDなら例外を投げ、Cookieを設定しない", async () => {

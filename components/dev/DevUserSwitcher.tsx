@@ -6,6 +6,7 @@
  * 挙動（PJ削除権限等）を実際の画面上で確認できるようにするためのもの。
  */
 import { Select } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 import { setDevUser } from "../../lib/auth/dev-actions";
@@ -27,8 +28,16 @@ export function DevUserSwitcher({ currentUserId }: { currentUserId: string }) {
       onChange={(value) => {
         if (!value) return;
         startTransition(async () => {
-          await setDevUser(value);
-          router.refresh();
+          try {
+            await setDevUser(value);
+            router.refresh();
+          } catch (error) {
+            notifications.show({
+              color: "red",
+              title: "ユーザー切り替えに失敗しました",
+              message: error instanceof Error ? error.message : "不明なエラーです",
+            });
+          }
         });
       }}
     />

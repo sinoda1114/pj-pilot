@@ -12,5 +12,5 @@ export async function setDevUser(userId: string): Promise<void> {
     throw new Error(`不明な開発用ユーザーです: ${userId}`);
   }
   const store = await cookies();
-  store.set(DEV_SESSION_COOKIE, userId, { path: "/", sameSite: "lax" });
+  store.set(DEV_SESSION_COOKIE, userId, { path: "/", sameSite: "lax", httpOnly: true });
 }

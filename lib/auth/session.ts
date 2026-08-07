@@ -20,11 +20,16 @@ import type { AuthSession } from "./types";
 const DEFAULT_DEV_USER_ID = DEV_USERS[0].userId;
 
 /**
- * 現在のセッションを返す。Cookie が無ければ既定の開発用ユーザーを返す
- * （Better Auth 導入前は「常にログイン済み」の状態になる）。
+ * 現在のセッションを返す。Cookie が無い、または既知の開発用ユーザーIDで
+ * なければ既定の開発用ユーザーを返す（Better Auth 導入前は「常にログイン
+ * 済み」の状態になる）。未知の値を許容すると `DevUserSwitcher` の
+ * `Select` がどの選択肢とも一致しない値を受け取ってしまう（Bugbot 指摘）。
  */
 export async function getSession(): Promise<AuthSession | null> {
   const store = await cookies();
-  const userId = store.get(DEV_SESSION_COOKIE)?.value ?? DEFAULT_DEV_USER_ID;
+  const cookieUserId = store.get(DEV_SESSION_COOKIE)?.value;
+  const userId = DEV_USERS.some((u) => u.userId === cookieUserId)
+    ? (cookieUserId as string)
+    : DEFAULT_DEV_USER_ID;
   return { userId };
 }
