@@ -27,9 +27,14 @@ export function ProjectSettingsForm({ projectId, dependencySyncEnabled }: Projec
   // `router.refresh()` 後にサーバから新しい `dependencySyncEnabled` が props として
   // 渡り直したとき、`checked` へ追従させる（GanttView.tsx の tasks/dependencies 同期と
   // 同じ、React公式推奨の「レンダー中に前回の props と比較して直接 setState する」
-  // パターン）。予期しない例外（下記 catch）発生時に、DB側の更新が実際には成功して
-  // いたかどうかをクライアント側では判断できないため、決め打ちで元に戻す代わりに
-  // ここでサーバの実際の値に追従させる（Cursor Bugbot指摘）。
+  // パターン）。予期しない例外（下記 catch）発生時、DB側の更新が実際には成功して
+  // いたかどうかをクライアント側では判断できないため、catch では前の値へいったん
+  // 戻しつつ（多くの例外は永続化前に発生するため、これが安全側のデフォルト。
+  // Amazon Q / Cursor Bugbot指摘）、`router.refresh()` 後にサーバ側の値が本当に
+  // 変わっていた（＝実は成功していた）場合は、この props 同期が
+  // `dependencySyncEnabled !== prevDependencySyncEnabled` を検知して正しい値へ
+  // 上書きする（Cursor Bugbot再指摘: 戻すだけでは成功時に表示が食い違ったまま
+  // 残ってしまうケースへの対策）。
   const [prevDependencySyncEnabled, setPrevDependencySyncEnabled] = useState(dependencySyncEnabled);
   if (dependencySyncEnabled !== prevDependencySyncEnabled) {
     setPrevDependencySyncEnabled(dependencySyncEnabled);
@@ -53,11 +58,11 @@ export function ProjectSettingsForm({ projectId, dependencySyncEnabled }: Projec
       });
       router.refresh();
     } catch (error) {
-      // `updateProjectAction` が予期しない例外を投げた場合（ネットワークエラー等）、
-      // その例外がDBへの書き込み後に発生した可能性もあり、ここで無条件に
-      // `setChecked(previous)` すると、実際にはDB更新が成功していたケースで
-      // 表示だけ古い値に戻ってしまう（Cursor Bugbot指摘）。決め打ちで戻さず、
-      // `router.refresh()` でサーバの実際の値を取り直し、上の props 同期に委ねる。
+      // ほとんどの例外（ネットワークエラー等）はサーバ側の永続化が完了する前に
+      // 発生するため、まず安全側のデフォルトとして直前の値へ戻す。まれに永続化後の
+      // 例外だった場合は、`router.refresh()` 後に上の props 同期が本当の値で
+      // 上書きする（コメント参照）。
+      setChecked(previous);
       notifications.show({
         color: "red",
         title: "予期しないエラーが発生しました",
