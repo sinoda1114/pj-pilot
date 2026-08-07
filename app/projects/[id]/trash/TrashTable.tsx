@@ -91,10 +91,13 @@ export function TrashTable({ projectId, rows }: { projectId: string; rows: Trash
   ];
 
   return (
+    // `TasksPageClient.tsx` と同じ理由（列に `width` を指定していないため、
+    // 狭い画面幅で見出し文字が縦積みになる、M6 #35）で `minWidth` を与える。
     <DataTable<TrashTaskRow>
       withTableBorder
       withColumnBorders
       minHeight={160}
+      style={{ minWidth: 600 }}
       idAccessor="id"
       records={visibleRows}
       noRecordsText="ゴミ箱は空です"

@@ -194,11 +194,19 @@ export function TasksPageClient({ projectId, tasks, assigneesByTaskId }: TasksPa
         <Button onClick={() => setDrawerState({ mode: "create" })}>新規タスク作成</Button>
       </Group>
 
+      {/*
+        列数が多く（タイトル/ステータス/優先度/担当者/開始日/終了日/進捗の7列）、
+        `width` を指定していないため、狭い画面幅では各列が個別に縮んで見出しの
+        文字が1文字ずつ縦積みになり読めなくなる（実機のスクリーンショットで確認済み、
+        M6 #35）。内部の `ScrollArea` に横スクロールを任せるため、テーブル自体には
+        `minWidth` を与えて必要以上に縮まないようにする。
+      */}
       <DataTable<Task>
         withTableBorder
         borderRadius="sm"
         highlightOnHover
         minHeight={200}
+        style={{ minWidth: 700 }}
         records={records}
         columns={columns}
         sortStatus={sortStatus}

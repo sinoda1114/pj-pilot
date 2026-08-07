@@ -18,7 +18,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Center, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { Gantt, Willow, type IApi, type IColumnConfig } from "@svar-ui/react-gantt";
+import {
+  Gantt,
+  Willow,
+  type IApi,
+  type IColumnConfig,
+  type IScaleConfig,
+  type IZoomConfig,
+} from "@svar-ui/react-gantt";
 import "@svar-ui/react-gantt/all.css";
 import {
   createDependencyAction,
@@ -57,12 +64,13 @@ export interface GanttViewProps {
  * かどうかを確認してから変換する。
  */
 const columns: IColumnConfig[] = [
-  { id: "text", header: "タスク名", flexgrow: 2 },
+  { id: "text", header: "タスク名", flexgrow: 2, resize: true },
   {
     id: "start",
     header: "開始日",
     align: "center",
     width: 110,
+    resize: true,
     template: (value: unknown) => (value instanceof Date ? fromGanttStartDate(value) : ""),
   },
   {
@@ -70,6 +78,7 @@ const columns: IColumnConfig[] = [
     header: "終了日",
     align: "center",
     width: 110,
+    resize: true,
     template: (value: unknown) => (value instanceof Date ? fromGanttEndDate(value) : ""),
   },
   {
@@ -77,9 +86,53 @@ const columns: IColumnConfig[] = [
     header: "進捗",
     align: "center",
     width: 80,
+    resize: true,
     template: (value: unknown) => (typeof value === "number" ? `${value}%` : ""),
   },
 ];
+
+/**
+ * M6 #33: チャート上部のスケールヘッダー（月・日）のロケール対応。
+ *
+ * SVAR本体・`@svar-ui/gantt-locales` はUIチェイン（ツールバー・右クリックメニュー・
+ * 標準タスクエディタ）文言の翻訳辞書のみを提供しており、この画面では標準
+ * エディタ等を使っていないため対象外（本体は`en`/`cn`のみで`ja`も無い）。
+ * スケールヘッダーの月表示はSVAR既定では英語（"July 2026"）になる
+ * （実機のスクリーンショットで確認済み）ため、`format` に関数を渡して
+ * 自前で日本語表記に変換する（`IScaleConfig.format` は文字列トークンか
+ * 関数のどちらかを受け付け、関数を渡すとSVAR側のトークン解釈を経由せず
+ * 自分で完全に文字列を制御できる）。
+ *
+ * ズーム（`zoom` #33）用に「日単位（既定）」「月単位（縮小）」の2段階を
+ * 用意する。`zoom.levels` の各レベルは独立した `scales` を持てるため、
+ * どちらのレベルでも英語に戻らず日本語表記を維持できる。
+ */
+const DAY_LEVEL_SCALES: IScaleConfig[] = [
+  {
+    unit: "month",
+    step: 1,
+    format: (date: Date) => `${date.getFullYear()}年${date.getMonth() + 1}月`,
+  },
+  { unit: "day", step: 1, format: (date: Date) => `${date.getDate()}` },
+];
+
+const MONTH_LEVEL_SCALES: IScaleConfig[] = [
+  { unit: "year", step: 1, format: (date: Date) => `${date.getFullYear()}年` },
+  { unit: "month", step: 1, format: (date: Date) => `${date.getMonth() + 1}月` },
+];
+
+/**
+ * Ctrl/Cmd+ホイールでズームする（SVAR標準の操作方法、実機確認済み。
+ * `wxi-gantt` コンポーネント側に `zoom-scale` アクションとしてハードコードされて
+ * おり、こちらから明示的にトリガーするAPIは無い）。既定（日単位）の
+ * `DAY_LEVEL_SCALES` から、縮小すると `MONTH_LEVEL_SCALES` に切り替わる。
+ */
+const zoom: IZoomConfig = {
+  levels: [
+    { minCellWidth: 60, maxCellWidth: 200, scales: DAY_LEVEL_SCALES },
+    { minCellWidth: 20, maxCellWidth: 60, scales: MONTH_LEVEL_SCALES },
+  ],
+};
 
 const SKIP_REASON_LABEL: Record<"pinned" | "deleted", string> = {
   pinned: "ピン留めのため",
@@ -237,7 +290,8 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
       skippedBySameReason.set(skip.reason, (skippedBySameReason.get(skip.reason) ?? 0) + 1);
     }
     const skippedLines = [...skippedBySameReason.entries()].map(
-      ([reason, count]) => `${count}件は${SKIP_REASON_LABEL[reason as "pinned" | "deleted"]}移動しませんでした`,
+      ([reason, count]) =>
+        `${count}件は${SKIP_REASON_LABEL[reason as "pinned" | "deleted"]}移動しませんでした`,
     );
 
     notifications.show({
@@ -262,7 +316,11 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
   async function applyAddLink(predecessorId: string, successorId: string) {
     const result = await createDependencyAction(projectId, predecessorId, successorId);
     if (!result.ok) {
-      notifications.show({ color: "red", title: "依存の作成に失敗しました", message: result.message });
+      notifications.show({
+        color: "red",
+        title: "依存の作成に失敗しました",
+        message: result.message,
+      });
       return;
     }
     // `id` を明示的に渡さないと SVAR が独自のIDを割り当ててしまい、後で
@@ -277,7 +335,11 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
   async function applyDeleteLink(dependencyId: string) {
     const result = await deleteDependencyAction(projectId, dependencyId);
     if (!result.ok) {
-      notifications.show({ color: "red", title: "依存の削除に失敗しました", message: result.message });
+      notifications.show({
+        color: "red",
+        title: "依存の削除に失敗しました",
+        message: result.message,
+      });
       return;
     }
     apiRef.current?.exec("delete-link", { id: dependencyId });
@@ -315,65 +377,87 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
   // （`all.css` の `.wx-willow-theme` セレクタでのみ定義される）。`Willow` で
   // 包まずに `all.css` だけを読み込むと、CSS 変数が未定義のままバーが透明になり
   // 何も描画されない（実機確認済み）。
+  //
+  // M6 #35: スマートフォン幅（実測375px）では、グリッド列（開始日/終了日/進捗の
+  // 固定幅合計300px超）がGanttコンテナの横幅に収まりきらず、SVAR内部が
+  // `.wx-table-container` に `flex: 0 0 calc(100% - 4px)` を割り当てて
+  // グリッド側がほぼ全幅を占有し、チャート側（`.wx-chart`）が `width: 0` に
+  // 潰れてバー・タイムラインが一切見えなくなる不具合を実機で確認した。
+  // 外側にこの `minWidth` + `overflowX: auto` のラッパーを挟むことで、
+  // SVAR内部には常に十分な幅（グリッド+チャート）を確保させ、収まらない
+  // 場合はページではなくこのGantt部分だけが横スクロールするようにする。
   return (
-    <Willow>
-      <Gantt
-        tasks={ganttTasks}
-        links={ganttLinks}
-        columns={columns}
-        init={(api) => {
-          apiRef.current = api;
+    <div style={{ overflowX: "auto" }}>
+      <div style={{ minWidth: 700 }}>
+        <Willow>
+          <Gantt
+            tasks={ganttTasks}
+            links={ganttLinks}
+            columns={columns}
+            scales={DAY_LEVEL_SCALES}
+            zoom={zoom}
+            init={(api) => {
+              apiRef.current = api;
 
-          api.intercept("update-task", (ev) => {
-            const diff = ev.diff;
-            if (typeof diff !== "number" || diff === 0) {
-              return true;
-            }
+              api.intercept("update-task", (ev) => {
+                const diff = ev.diff;
+                if (typeof diff !== "number" || diff === 0) {
+                  return true;
+                }
 
-            // `task.start` の有無で移動/リサイズを判定する（決定D-01: リサイズは
-            // 終了日のみ変更）。`task.start`/`task.end` の値自体は SVAR が
-            // 返す時点ではまだ変更前のスナップショットのため使わず、`diff`
-            // （実測で確認済みの整数の日数）だけを Δ として使う。
-            const isResize = ev.task.start === undefined && ev.task.end !== undefined;
-            // サーバ確定に失敗した場合の巻き戻し用に、変更前の値を
-            // `api.getTask` から取得しておく（intercept 時点ではまだ内部状態に
-            // 適用されていないため、ここで取得した値が「変更前」になる）。
-            const before = api.getTask(ev.id);
-            // Shiftキーの押下状態は intercept 時点（ドラッグ確定の瞬間）でスナップ
-            // ショットを取る。キュー内で待機して実行が遅れる `applyDragChange` の
-            // 内部で都度 `shiftPressedRef.current` を読むと、キュー待機中にユーザーが
-            // Shiftを離した場合、決定D-08（Shiftドラッグは連動を切る）に反して
-            // 連動ONのまま確定してしまう（Cursor Bugbot指摘）。
-            const bypassSync = shiftPressedRef.current;
-            // 前のドラッグ/Undoのサーバ確定を待ってから次を実行する（直列化、
-            // `enqueue` 定義部のコメント参照）。`applyDragChange` 自体は内部で全
-            // エラーを `notifications` に変換して握りつぶす設計だが、万一の例外で
-            // チェーンが途切れないよう `enqueue` 側で保険の catch をしている。
-            enqueue(() =>
-              applyDragChange(String(ev.id), diff, isResize, before?.start, before?.end, bypassSync),
-            );
+                // `task.start` の有無で移動/リサイズを判定する（決定D-01: リサイズは
+                // 終了日のみ変更）。`task.start`/`task.end` の値自体は SVAR が
+                // 返す時点ではまだ変更前のスナップショットのため使わず、`diff`
+                // （実測で確認済みの整数の日数）だけを Δ として使う。
+                const isResize = ev.task.start === undefined && ev.task.end !== undefined;
+                // サーバ確定に失敗した場合の巻き戻し用に、変更前の値を
+                // `api.getTask` から取得しておく（intercept 時点ではまだ内部状態に
+                // 適用されていないため、ここで取得した値が「変更前」になる）。
+                const before = api.getTask(ev.id);
+                // Shiftキーの押下状態は intercept 時点（ドラッグ確定の瞬間）でスナップ
+                // ショットを取る。キュー内で待機して実行が遅れる `applyDragChange` の
+                // 内部で都度 `shiftPressedRef.current` を読むと、キュー待機中にユーザーが
+                // Shiftを離した場合、決定D-08（Shiftドラッグは連動を切る）に反して
+                // 連動ONのまま確定してしまう（Cursor Bugbot指摘）。
+                const bypassSync = shiftPressedRef.current;
+                // 前のドラッグ/Undoのサーバ確定を待ってから次を実行する（直列化、
+                // `enqueue` 定義部のコメント参照）。`applyDragChange` 自体は内部で全
+                // エラーを `notifications` に変換して握りつぶす設計だが、万一の例外で
+                // チェーンが途切れないよう `enqueue` 側で保険の catch をしている。
+                enqueue(() =>
+                  applyDragChange(
+                    String(ev.id),
+                    diff,
+                    isResize,
+                    before?.start,
+                    before?.end,
+                    bypassSync,
+                  ),
+                );
 
-            return true; // 楽観的にローカル反映を許可し、結果はサーバ確定後に上書きする。
-          });
+                return true; // 楽観的にローカル反映を許可し、結果はサーバ確定後に上書きする。
+              });
 
-          api.intercept("add-link", (ev) => {
-            const { source, target } = ev.link;
-            if (source === undefined || target === undefined) {
-              return true;
-            }
-            // 循環検出等のサーバ側バリデーションを待つ必要があるため、
-            // 一旦キャンセルしてからサーバの検証結果を見て正式に反映する
-            // （update-task と異なり悲観的に扱う）。
-            void applyAddLink(String(source), String(target));
-            return false;
-          });
+              api.intercept("add-link", (ev) => {
+                const { source, target } = ev.link;
+                if (source === undefined || target === undefined) {
+                  return true;
+                }
+                // 循環検出等のサーバ側バリデーションを待つ必要があるため、
+                // 一旦キャンセルしてからサーバの検証結果を見て正式に反映する
+                // （update-task と異なり悲観的に扱う）。
+                void applyAddLink(String(source), String(target));
+                return false;
+              });
 
-          api.intercept("delete-link", (ev) => {
-            void applyDeleteLink(String(ev.id));
-            return false;
-          });
-        }}
-      />
-    </Willow>
+              api.intercept("delete-link", (ev) => {
+                void applyDeleteLink(String(ev.id));
+                return false;
+              });
+            }}
+          />
+        </Willow>
+      </div>
+    </div>
   );
 }
