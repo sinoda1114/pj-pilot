@@ -147,6 +147,17 @@ describe("projects/service", () => {
       expect(result.description).toBe("元の説明");
     });
 
+    it("dependencySyncEnabledを更新できる（M5 #29: 連動ON/OFFトグル）", async () => {
+      const project = await createProject(handle.db, OWNER, { name: "連動設定確認用" });
+      expect(project.dependencySyncEnabled).toBe(true);
+
+      const updated = await updateProject(handle.db, OWNER, project.id, {
+        dependencySyncEnabled: false,
+      });
+
+      expect(updated.dependencySyncEnabled).toBe(false);
+    });
+
     it("論理削除済みのPJは NotFoundError を投げる", async () => {
       const project = await createProject(handle.db, OWNER, { name: "削除予定" });
       await deleteProject(handle.db, OWNER, project.id);

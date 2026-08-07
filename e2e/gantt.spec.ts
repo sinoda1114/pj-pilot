@@ -57,6 +57,13 @@ test.beforeAll(async () => {
       sortOrder: 1,
     });
 
+    await createTask(db, session, projectId, {
+      title: "E2Eピン留めタスク",
+      startDate: "2026-08-10",
+      endDate: "2026-08-12",
+      isPinned: true,
+    });
+
     const empty = await createProject(db, session, {
       name: `E2E Gantt空状態確認 ${Date.now()}`,
     });
@@ -114,8 +121,18 @@ test("Gantt画面にタスクの階層とバーが表示される", async ({ pag
   await expect(grid.getByText("E2E子タスクA")).toBeVisible();
   await expect(grid.getByText("E2E子タスクB")).toBeVisible();
 
-  // 親1件・子2件ぶんのバーが描画されていること（階層が展開されている）。
-  await expect(page.locator(".wx-bar")).toHaveCount(3);
+  // 親1件・子2件・ピン留め1件ぶんのバーが描画されていること（階層が展開されている）。
+  await expect(page.locator(".wx-bar")).toHaveCount(4);
+});
+
+test("ピン留めされたタスクはタスク名の先頭に📌が表示される（M5 #30）", async ({ page }) => {
+  await page.goto(`/projects/${projectId}/gantt`);
+  await page.locator(".wx-gantt").waitFor();
+
+  const grid = page.locator(".wx-grid");
+  await expect(grid.getByText("📌 E2Eピン留めタスク")).toBeVisible();
+  // ピン留めされていない通常タスクには付かないこと。
+  await expect(grid.getByText("📌 E2E親タスク")).toHaveCount(0);
 });
 
 test("タスクが無いプロジェクトでも空状態が表示されエラーにならない", async ({ page }) => {

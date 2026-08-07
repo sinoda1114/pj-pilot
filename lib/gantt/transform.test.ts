@@ -29,6 +29,7 @@ describe("toGanttTasks", () => {
         endDate: "2026-08-03",
         progress: 50,
         type: "task",
+        isPinned: false,
       },
     ]);
 
@@ -47,6 +48,7 @@ describe("toGanttTasks", () => {
         endDate: "2026-08-01",
         progress: 0,
         type: "task",
+        isPinned: false,
       },
     ]);
 
@@ -64,6 +66,7 @@ describe("toGanttTasks", () => {
         endDate: "2026-08-01",
         progress: 0,
         type: "task",
+        isPinned: false,
       },
     ]);
 
@@ -80,6 +83,7 @@ describe("toGanttTasks", () => {
         endDate: "2026-08-01",
         progress: 0,
         type: "task",
+        isPinned: false,
       },
     ]);
 
@@ -96,6 +100,7 @@ describe("toGanttTasks", () => {
         endDate: "2026-08-05",
         progress: 30,
         type: "summary",
+        isPinned: false,
       },
     ]);
 
@@ -114,6 +119,7 @@ describe("toGanttTasks", () => {
         endDate: "2026-08-01",
         progress: 0,
         type: "task",
+        isPinned: false,
       },
     ]);
 
@@ -123,6 +129,34 @@ describe("toGanttTasks", () => {
     expect(result?.start.getMonth()).toBe(7);
     expect(result?.start.getDate()).toBe(1);
     expect(result?.end.getDate()).toBe(2);
+  });
+
+  it("M5 #30: isPinnedをそのまま写す（Gantt上の視覚表現に使う）", () => {
+    const [pinned, unpinned] = toGanttTasks([
+      {
+        id: "t1",
+        parentId: null,
+        title: "ピン留めタスク",
+        startDate: "2026-08-01",
+        endDate: "2026-08-01",
+        progress: 0,
+        type: "task",
+        isPinned: true,
+      },
+      {
+        id: "t2",
+        parentId: null,
+        title: "通常タスク",
+        startDate: "2026-08-01",
+        endDate: "2026-08-01",
+        progress: 0,
+        type: "task",
+        isPinned: false,
+      },
+    ]);
+
+    expect(pinned?.isPinned).toBe(true);
+    expect(unpinned?.isPinned).toBe(false);
   });
 });
 
@@ -153,6 +187,7 @@ describe("fromGanttStartDate / fromGanttEndDate", () => {
         endDate: "2026-08-05",
         progress: 0,
         type: "task",
+        isPinned: false,
       },
     ]);
 
@@ -172,6 +207,7 @@ describe("fromGanttStartDate / fromGanttEndDate", () => {
         endDate: "2026-08-05",
         progress: 0,
         type: "task",
+        isPinned: false,
       },
     ]);
 
@@ -199,6 +235,7 @@ describe("toGanttStartDate / toGanttEndDate（M4: ドラッグ確定後のサー
         endDate: "2026-08-05",
         progress: 0,
         type: "task",
+        isPinned: false,
       },
     ]);
 

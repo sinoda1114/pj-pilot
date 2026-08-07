@@ -15,6 +15,7 @@ const TABS = [
   { segment: "tasks", label: "タスク" },
   { segment: "gantt", label: "Gantt" },
   { segment: "trash", label: "ゴミ箱" },
+  { segment: "settings", label: "設定" },
 ] as const;
 
 export function ProjectTabs({ projectId }: { projectId: string }) {
