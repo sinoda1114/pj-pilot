@@ -27,6 +27,17 @@ import * as schema from "../../lib/db/schema/auth";
  * 注入する2段階の構成にするためのもの。
  */
 export async function createTestUser(overrides: { email: string; name: string }) {
+  // `secret`が未設定だとbetter-authが実行のたびに別の一時鍵で動作しうり、
+  // このヘルパーが発行したCookieを実サーバー（`lib/auth.ts`の`auth`インスタンス、
+  // 別プロセス）側で検証できず原因不明のテスト失敗になる（Amazon Q指摘）。
+  // `playwright.config.ts`が`.env.local`をロードし忘れている場合等に早く気付けるよう
+  // fail-fastにする。
+  if (!process.env.BETTER_AUTH_SECRET) {
+    throw new Error(
+      "BETTER_AUTH_SECRET が未設定です。playwright.config.ts の .env.local ロードを確認してください。",
+    );
+  }
+
   const { db, client } = createDb();
   try {
     const testAuth = betterAuth({

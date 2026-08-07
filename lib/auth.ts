@@ -11,6 +11,11 @@
  * `plugins: [nextCookies()]` は公式のNext.js統合ドキュメントが推奨する設定
  * （Server Action からの呼び出しでも Cookie が正しく設定されるようにする）。
  * プラグイン配列の最後に置く必要がある。
+ *
+ * `account.encryptOAuthTokens: true` — Better Authは既定でaccessToken/
+ * refreshToken/idTokenを平文でDBに保存する。本アプリはログイン後にGoogle
+ * APIを呼ばず、この値を実際には使わないため、DB漏洩時の被害を減らす目的で
+ * 暗号化を有効にする（Amazon Q指摘、CWE-312）。
  */
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
@@ -20,14 +25,25 @@ import { db } from "./db";
 import * as schema from "./db/schema";
 import { isAllowedEmailDomain } from "./auth/domain-restriction";
 
+function requireEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`${name} environment variable is required`);
+  }
+  return value;
+}
+
 export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: "sqlite", schema }),
   baseURL: process.env.BETTER_AUTH_URL,
   socialProviders: {
     google: {
-      clientId: process.env.GOOGLE_CLIENT_ID as string,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET as string,
+      clientId: requireEnv("GOOGLE_CLIENT_ID"),
+      clientSecret: requireEnv("GOOGLE_CLIENT_SECRET"),
     },
+  },
+  account: {
+    encryptOAuthTokens: true,
   },
   databaseHooks: {
     user: {
