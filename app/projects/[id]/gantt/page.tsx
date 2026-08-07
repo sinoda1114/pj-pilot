@@ -37,10 +37,5 @@ export default async function ProjectGanttPage({
     listDependenciesByProject(db, project.id),
   ]);
 
-  return (
-    <div>
-      <h1>{project.name}</h1>
-      <GanttLoader tasks={tasks} dependencies={dependencies} />
-    </div>
-  );
+  return <GanttLoader tasks={tasks} dependencies={dependencies} />;
 }
