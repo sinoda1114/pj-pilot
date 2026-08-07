@@ -5,7 +5,12 @@ import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDb, type DbHandle } from "./client";
-import { getActiveProject, listActiveProjects, listDeletedTasksByProject } from "./queries";
+import {
+  getActiveProject,
+  listActiveProjects,
+  listAllTasksByProject,
+  listDeletedTasksByProject,
+} from "./queries";
 import { projects, tasks } from "./schema";
 
 describe("queries: 生存レコードのみを返す（§3.2 / §4.4(c)）", () => {
@@ -156,5 +161,69 @@ describe("listDeletedTasksByProject（M1 #9c ゴミ箱一覧）", () => {
     const result = await listDeletedTasksByProject(handle.db, projectId);
 
     expect(result).toEqual([]);
+  });
+});
+
+describe("listAllTasksByProject（M4 依存伝播用）", () => {
+  let dir: string;
+  let handle: DbHandle;
+  let projectId: string;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "pj-pilot-queries-all-tasks-test-"));
+    handle = createDb(`file:${join(dir, "test.db")}`);
+    await migrate(handle.db, { migrationsFolder: "./drizzle" });
+
+    const [project] = await handle.db.insert(projects).values({ name: "P" }).returning();
+    if (!project) {
+      throw new Error("Failed to create test project");
+    }
+    projectId = project.id;
+  });
+
+  afterEach(() => {
+    try {
+      handle.client.close();
+    } finally {
+      if (existsSync(dir)) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("生存中・削除済みの両方を返す", async () => {
+    const [alive] = await handle.db
+      .insert(tasks)
+      .values({ projectId, title: "生存中", startDate: "2026-08-01", endDate: "2026-08-05" })
+      .returning();
+    const [deleted] = await handle.db
+      .insert(tasks)
+      .values({ projectId, title: "削除済み", startDate: "2026-08-01", endDate: "2026-08-05" })
+      .returning();
+    if (!alive || !deleted) {
+      throw new Error("Failed to create test tasks");
+    }
+    await handle.db.update(tasks).set({ deletedAt: new Date() }).where(eq(tasks.id, deleted.id));
+
+    const result = await listAllTasksByProject(handle.db, projectId);
+
+    expect(result.map((t) => t.id).sort()).toEqual([alive.id, deleted.id].sort());
+  });
+
+  it("他プロジェクトのタスクは含めない", async () => {
+    const [otherProject] = await handle.db.insert(projects).values({ name: "他PJ" }).returning();
+    if (!otherProject) {
+      throw new Error("Failed to create other test project");
+    }
+    await handle.db.insert(tasks).values({
+      projectId: otherProject.id,
+      title: "他PJのタスク",
+      startDate: "2026-08-01",
+      endDate: "2026-08-05",
+    });
+
+    const result = await listAllTasksByProject(handle.db, projectId);
+
+    expect(result).toHaveLength(0);
   });
 });

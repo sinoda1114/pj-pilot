@@ -1,10 +1,7 @@
 /**
- * プロジェクトの Gantt 画面（M3 #20）。Server Component としてデータ取得のみ行い、
- * 実際の描画は `GanttLoader`（"use client" + `next/dynamic(..., { ssr: false })`）に委ねる
- * （§2.4「Next.js App Router での組み込み」）。
- *
- * 依存線のドラッグ連動（M4 のスコープ）はここでは扱わない。既存タスクの階層・日付・
- * 依存線を描画するだけの読み取り専用ビュー。
+ * プロジェクトの Gantt 画面（M3 #20 / M4 ドラッグ連動）。Server Component として
+ * データ取得のみ行い、実際の描画・ドラッグ操作は `GanttLoader`（"use client" +
+ * `next/dynamic(..., { ssr: false })`）以下に委ねる（§2.4）。
  */
 import { notFound } from "next/navigation";
 import { requireLogin } from "../../../../lib/auth/authz";
@@ -37,5 +34,5 @@ export default async function ProjectGanttPage({
     listDependenciesByProject(db, project.id),
   ]);
 
-  return <GanttLoader tasks={tasks} dependencies={dependencies} />;
+  return <GanttLoader projectId={project.id} tasks={tasks} dependencies={dependencies} />;
 }

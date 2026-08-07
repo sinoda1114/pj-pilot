@@ -65,11 +65,28 @@ export function toGanttTasks(tasks: DbTaskLike[]): GanttTaskInput[] {
     id: task.id,
     parent: task.parentId ?? GANTT_ROOT_PARENT,
     text: task.title,
-    start: dateOnlyToLocalDate(task.startDate),
-    end: dateOnlyToLocalDate(addDaysToDateOnly(task.endDate, 1)),
+    start: toGanttStartDate(task.startDate),
+    end: toGanttEndDate(task.endDate),
     progress: task.progress,
     type: task.type,
   }));
+}
+
+/**
+ * DB の `start_date`（'YYYY-MM-DD'）を SVAR Gantt の `Date` へ変換する。
+ * ドラッグ確定後にサーバの確定結果を `api.exec("update-task", ...)` で
+ * 書き戻す際にも使う（M4）。
+ */
+export function toGanttStartDate(dateOnly: string): Date {
+  return dateOnlyToLocalDate(dateOnly);
+}
+
+/**
+ * DB の `end_date`（'YYYY-MM-DD'、終了日を含む）を SVAR Gantt の `Date`
+ * （排他）へ変換する。
+ */
+export function toGanttEndDate(dateOnly: string): Date {
+  return dateOnlyToLocalDate(addDaysToDateOnly(dateOnly, 1));
 }
 
 /** DB の依存関係一覧を SVAR Gantt が受け取れる形へ変換する（初版は FS 固定＝"e2s"）。 */
