@@ -1,0 +1,50 @@
+/**
+ * タスク一覧画面（M2 #14〜#17）。Server Component としてデータ取得のみを行い、
+ * 描画・インタラクションは `TasksPageClient`（Client Component）に委譲する。
+ */
+import { notFound } from "next/navigation";
+import { Stack, Title } from "@mantine/core";
+import { getSession } from "../../../../lib/auth/session";
+import { db } from "../../../../lib/db";
+import { getActiveProject } from "../../../../lib/db/queries";
+import { NotFoundError } from "../../../../lib/errors";
+import { listTaskAssignees } from "../../../../lib/tasks/assignees";
+import { listTasks } from "../../../../lib/tasks/service";
+import { TasksPageClient } from "./TasksPageClient";
+
+export default async function ProjectTasksPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id: projectId } = await params;
+  const session = await getSession();
+
+  let taskList: Awaited<ReturnType<typeof listTasks>>;
+  try {
+    taskList = await listTasks(db, session, projectId);
+  } catch (error) {
+    if (error instanceof NotFoundError) {
+      notFound();
+    }
+    throw error;
+  }
+
+  const project = await getActiveProject(db, projectId);
+
+  const assigneeLists = await Promise.all(
+    taskList.map((task) => listTaskAssignees(db, session, task.id)),
+  );
+
+  const assigneesByTaskId: Record<string, string[]> = {};
+  taskList.forEach((task, index) => {
+    assigneesByTaskId[task.id] = (assigneeLists[index] ?? []).map((row) => row.userId);
+  });
+
+  return (
+    <Stack gap="lg">
+      <Title order={2}>{project?.name ?? "タスク一覧"}</Title>
+      <TasksPageClient projectId={projectId} tasks={taskList} assigneesByTaskId={assigneesByTaskId} />
+    </Stack>
+  );
+}
