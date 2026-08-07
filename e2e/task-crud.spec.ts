@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { createDb, type DbHandle } from "../lib/db/client";
 import { createProject } from "../lib/projects/service";
+import { addSessionCookies, createTestUser } from "./helpers/auth";
 
 /**
  * タスク CRUD 画面の e2e（M2 #14〜#17）。
@@ -11,16 +12,17 @@ import { createProject } from "../lib/projects/service";
  * 同じ URL 解決ロジック（`TURSO_DATABASE_URL` が無ければ `file:local.db`）で直接開く。
  */
 
-const SESSION = { userId: "e2e-tester" };
-
+let session: Awaited<ReturnType<typeof createTestUser>>;
 let handle: DbHandle;
 let projectId: string;
 
 test.beforeAll(async () => {
+  session = await createTestUser({ email: "e2e-task-crud@example.com", name: "E2E Task CRUD" });
+
   const resolvedUrl = process.env.TURSO_DATABASE_URL ?? "file:local.db";
   handle = createDb(resolvedUrl);
 
-  const project = await createProject(handle.db, SESSION, {
+  const project = await createProject(handle.db, { userId: session.userId }, {
     name: `E2E タスクCRUD検証用 ${Date.now()}`,
   });
   projectId = project.id;
@@ -28,6 +30,10 @@ test.beforeAll(async () => {
 
 test.afterAll(() => {
   handle.client.close();
+});
+
+test.beforeEach(async ({ context }) => {
+  await addSessionCookies(context, session.cookies);
 });
 
 test("タスクを新規作成→一覧に表示→Drawerで編集→保存が反映される", async ({ page }) => {
@@ -70,9 +76,8 @@ test("タスクを新規作成→一覧に表示→Drawerで編集→保存が�
 });
 
 test("子タスクを持つタスクは削除方法の選択を求められる", async ({ page }) => {
-  const session = SESSION;
-  const parent = await createTaskForTest(session, "親タスク");
-  await createTaskForTest(session, "子タスク", parent.id);
+  const parent = await createTaskForTest({ userId: session.userId }, "親タスク");
+  await createTaskForTest({ userId: session.userId }, "子タスク", parent.id);
 
   await page.goto(`/projects/${projectId}/tasks`);
   await page.getByText("親タスク", { exact: true }).click();

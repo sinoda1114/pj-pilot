@@ -8,6 +8,13 @@
       "when": 1786016970549,
       "tag": "0000_lucky_quicksilver",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786097857764,
+      "tag": "0001_stale_bloodstrike",
+      "breakpoints": true
     }
   ]
 }

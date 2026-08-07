@@ -1,11 +1,8 @@
 /**
- * 認証実装（Better Auth）が入るまでのプレースホルダー型。
- *
- * 2026-08-06 時点で better-auth 本体に未修正の Critical 脆弱性があるため
- * 導入を保留している（lib/db/schema/app.ts のコメント参照）。認可ヘルパは
- * 実際のセッション取得手段（`auth.api.getSession()` 等）に依存させず、
- * 最小限のセッション情報だけを受け取る形にしておく。Better Auth 導入後は
- * 実際のセッション型からこの形に詰め替えて渡す想定。
+ * 認可ヘルパ（`lib/auth/authz.ts`）・service層が受け取る最小限のセッション情報。
+ * Better Auth の実セッション型（`user.name`/`email`等を含む）には依存させず、
+ * `lib/auth/session.ts` がここへ詰め替えて渡す。表示用に実ユーザー名/emailが
+ * 必要な箇所（`app/layout.tsx`）は、この型を経由せず個別に取得する。
  */
 export interface AuthSession {
   userId: string;

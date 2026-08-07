@@ -17,7 +17,7 @@
 | マイルストーン | 状態 |
 |---|---|
 | M0 足場（Next.js + Mantine + CI） | ✅ 完了 |
-| M1 DB接続層・暫定devセッション・ラベル層・論理削除 | ✅ 完了（Better Auth 本実装のみ未着手・意図的に最後まで先送り） |
+| M1 DB接続層・ラベル層・論理削除 | ✅ 完了 |
 | M2 プロジェクト/タスクCRUD画面 | ✅ 完了 |
 | M3 WBS階層・Ganttスパイク・データ変換層・読み取り専用表示 | ✅ 完了（ドラッグ連動はM4） |
 | M4 依存CRUD・循環検出・伝播ロジック（`propagate.ts`） | ✅ 完了（ロジックのみ） |
@@ -91,9 +91,9 @@ M0 は既に `main` にマージ済みなので、**このタイミングで実�
 |---|---|---|---|
 | `TURSO_DATABASE_URL` | 本番DB | Preview DB | §4 |
 | `TURSO_AUTH_TOKEN` | 〃 | 〃 | |
-| `BETTER_AUTH_SECRET` | ✓ | ✓ | `openssl rand -base64 32`。**Better Auth本体は未導入だが値は今のうちに発行しておいてよい** |
+| `BETTER_AUTH_SECRET` | ✓ | ✓ | `openssl rand -base64 32`。Better Auth本体が実際にこの値でセッション署名を行うため、本番/Previewとも必ず異なる値を設定する |
 | `BETTER_AUTH_URL` | 本番URL | Preview固定URL | |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | ✓ | ✓ | §5。後回し可 |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | ✓ | ✓ | §5。**Better Auth本実装済みのため必須**（未設定だとログイン導線が機能しない） |
 | `ALLOWED_EMAIL_DOMAINS` | 例 `example.co.jp` | 〃 | 決定D-07。カンマ区切りで複数可 |
 | `CRON_SECRET` | ✓ | 任意 | `/api/cron/purge-trash` の認証（`app/api/cron/purge-trash/route.ts` で検証済み・実装済み） |
 | `NEXT_PUBLIC_SITE_URL` | 本番URL | Preview固定URL | |
@@ -131,12 +131,14 @@ npm run db:migrate
 rm .env   # 使い終わったら必ず削除する（.gitignore済みだが残さない）
 ```
 
-## 5. Google OAuth クライアント（§10.5、優先度低）
+## 5. Google OAuth クライアント（§10.5、必須）
 
-**Better Auth 本体の導入自体を意図的に最後まで先送りしている**（未修正の Critical 脆弱性が
-理由）ため、ここは急がなくてよい。M4〜M6 のUI実装を進める間は後回しにできる。
+**Better Auth 本実装済み**（Google OAuth限定・`ALLOWED_EMAIL_DOMAINS`によるドメイン制限）。
+以前はBetter Auth本体に未修正のCritical脆弱性があったため導入を保留していたが、該当CVE
+（CVE-2026-53513, CVE-2026-67336）は`better-auth@1.6.11`で修正済みと確認し、`1.6.26`を
+導入した（詳細は`docs/IMPLEMENTATION_PLAN.md` R-11参照）。この節の作業は先送りできない。
 
-着手する際は Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 クライアント ID
+Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 クライアント ID
 （Web）で、承認済みリダイレクトURIに以下を登録する。
 
 ```
@@ -146,7 +148,8 @@ https://<Preview固定ドメイン>/api/auth/callback/google
 ```
 
 同意画面は可能なら Internal（Google Workspace組織内）。ただし Internal だけでは防御にならず、
-アプリ側の `ALLOWED_EMAIL_DOMAINS` 判定が必須（決定D-07 / R-10、Better Auth導入時に実装）。
+アプリ側の `ALLOWED_EMAIL_DOMAINS` 判定が必須（決定D-07 / R-10、`lib/auth.ts`・
+`lib/auth/domain-restriction.ts` で実装済み）。
 
 ## 6. ローカル開発環境のセットアップ
 
@@ -160,17 +163,15 @@ npm run db:seed              # 任意。開発用ダミーデータ（seed-owner
 npm run dev
 ```
 
-起動後、画面右上の「開発用ユーザー切り替え」で owner/member を切り替えられる
-（`lib/auth/session.ts` の暫定実装。Cookieベースで、Better Auth導入後に削除する）。
+起動後、`/sign-in` から「Googleでログイン」でサインインする。`GOOGLE_CLIENT_ID`/
+`GOOGLE_CLIENT_SECRET`が本物の値でないと（§5未実施の場合）実際のログインは完了しない。
 
 ---
 
 ## 重要な注意（見落とすと事故になる）
 
-- **⚠️ 公開範囲**: 暫定devセッション（`lib/auth/session.ts`）は Cookie の値をそのまま
-  信頼するだけで実際の認証を行わない。**Better Auth 導入までは、Vercel の本番/Preview URL を
-  誰でもアクセスできる状態で公開しないこと**（`docs/IMPLEMENTATION_PLAN.md` R-11）。
-  Vercel の Deployment Protection 等でアクセスを絞ること。
+- **`ALLOWED_EMAIL_DOMAINS` 未設定に注意**: 未設定・空文字列の場合は安全側デフォルトで
+  全ドメイン拒否になる（`lib/auth/domain-restriction.ts`）。ログインできない場合はまずこの値を疑う。
 - **`CRON_SECRET` 未設定に注意**（§3参照）。
 - リポジトリは Public。Turso トークン・Google OAuth シークレットは絶対にコミットしない
   （`.env*.local` は `.gitignore` 済みだが、コミット前に毎回 `git status` で確認する）。

@@ -1,18 +1,19 @@
 import { test, expect } from "@playwright/test";
 import { createDb } from "../lib/db/client";
-import type { AuthSession } from "../lib/auth/types";
 import { createDependency } from "../lib/dependencies/service";
 import { createProject } from "../lib/projects/service";
 import { createTask } from "../lib/tasks/service";
+import { addSessionCookies, createTestUser } from "./helpers/auth";
 
 /**
  * Gantt 画面の E2E（M3 #20 / M4 ドラッグ連動）。既存タスクの階層・日付・依存線の
  * 表示に加え、ドラッグでの移動→依存連動→Undo、依存の新規作成を検証する。
  *
- * Better Auth 未導入（`lib/auth/session.ts` 参照）のため、テストデータの作成は
- * 実際のログインフローを経由せず、service 層を直接呼び出して用意する。
+ * テストデータの作成は実際のログインフローを経由せず service 層を直接呼び出すが、
+ * 呼び出しに使う`userId`は`testUtils`で作成した実Better Authユーザーのものを使う
+ * （各ページの`requireLogin`が実セッションを要求するため）。
  */
-const session: AuthSession = { userId: "e2e-gantt-user" };
+let session: Awaited<ReturnType<typeof createTestUser>>;
 
 let projectId: string;
 let emptyProjectId: string;
@@ -27,21 +28,24 @@ let linkProjectId: string;
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async () => {
+  session = await createTestUser({ email: "e2e-gantt@example.com", name: "E2E Gantt" });
+  const authSession = { userId: session.userId };
+
   const { db, client } = createDb();
   try {
-    const project = await createProject(db, session, {
+    const project = await createProject(db, authSession, {
       name: `E2E Gantt表示確認 ${Date.now()}`,
     });
     projectId = project.id;
 
-    const parent = await createTask(db, session, projectId, {
+    const parent = await createTask(db, authSession, projectId, {
       title: "E2E親タスク",
       type: "summary",
       startDate: "2026-08-10",
       endDate: "2026-08-20",
     });
 
-    await createTask(db, session, projectId, {
+    await createTask(db, authSession, projectId, {
       title: "E2E子タスクA",
       parentId: parent.id,
       startDate: "2026-08-10",
@@ -49,7 +53,7 @@ test.beforeAll(async () => {
       sortOrder: 0,
     });
 
-    await createTask(db, session, projectId, {
+    await createTask(db, authSession, projectId, {
       title: "E2E子タスクB",
       parentId: parent.id,
       startDate: "2026-08-15",
@@ -57,46 +61,46 @@ test.beforeAll(async () => {
       sortOrder: 1,
     });
 
-    await createTask(db, session, projectId, {
+    await createTask(db, authSession, projectId, {
       title: "E2Eピン留めタスク",
       startDate: "2026-08-10",
       endDate: "2026-08-12",
       isPinned: true,
     });
 
-    const empty = await createProject(db, session, {
+    const empty = await createProject(db, authSession, {
       name: `E2E Gantt空状態確認 ${Date.now()}`,
     });
     emptyProjectId = empty.id;
 
     // ドラッグ連動用: A→Bの依存を持つ2タスク。
-    const dragProject = await createProject(db, session, {
+    const dragProject = await createProject(db, authSession, {
       name: `E2E Ganttドラッグ連動確認 ${Date.now()}`,
     });
     dragProjectId = dragProject.id;
-    const dragA = await createTask(db, session, dragProjectId, {
+    const dragA = await createTask(db, authSession, dragProjectId, {
       title: "E2Eドラッグ元タスク",
       startDate: "2026-08-10",
       endDate: "2026-08-12",
     });
-    const dragB = await createTask(db, session, dragProjectId, {
+    const dragB = await createTask(db, authSession, dragProjectId, {
       title: "E2Eドラッグ先タスク",
       startDate: "2026-08-13",
       endDate: "2026-08-15",
     });
-    await createDependency(db, session, dragProjectId, dragA.id, dragB.id);
+    await createDependency(db, authSession, dragProjectId, dragA.id, dragB.id);
 
     // 依存新規作成用: 依存の無い2タスク。
-    const linkProject = await createProject(db, session, {
+    const linkProject = await createProject(db, authSession, {
       name: `E2E Gantt依存作成確認 ${Date.now()}`,
     });
     linkProjectId = linkProject.id;
-    await createTask(db, session, linkProjectId, {
+    await createTask(db, authSession, linkProjectId, {
       title: "E2E依存元候補",
       startDate: "2026-08-10",
       endDate: "2026-08-12",
     });
-    await createTask(db, session, linkProjectId, {
+    await createTask(db, authSession, linkProjectId, {
       title: "E2E依存先候補",
       startDate: "2026-08-13",
       endDate: "2026-08-15",
@@ -104,6 +108,10 @@ test.beforeAll(async () => {
   } finally {
     client.close();
   }
+});
+
+test.beforeEach(async ({ context }) => {
+  await addSessionCookies(context, session.cookies);
 });
 
 test("Gantt画面にタスクの階層とバーが表示される", async ({ page }) => {

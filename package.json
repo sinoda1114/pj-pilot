@@ -33,6 +33,7 @@
     "@mantine/notifications": "9.5.1",
     "@paralleldrive/cuid2": "3.3.0",
     "@svar-ui/react-gantt": "2.7.1",
+    "better-auth": "1.6.26",
     "clsx": "2.1.1",
     "date-fns": "4.4.0",
     "dayjs": "1.11.21",
@@ -43,6 +44,7 @@
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@next/env": "16.3.0",
     "@playwright/test": "1.62.1",
     "@types/node": "26.1.2",
     "@types/react": "19.2.18",

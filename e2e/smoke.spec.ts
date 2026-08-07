@@ -1,6 +1,9 @@
 import { test, expect } from "@playwright/test";
+import { createLoggedInSession } from "./helpers/auth";
 
-test("トップページはプロジェクト一覧へリダイレクトされる", async ({ page }) => {
+test("トップページはプロジェクト一覧へリダイレクトされる", async ({ page, context }) => {
+  await createLoggedInSession(context, { email: "e2e-smoke@example.com", name: "E2E Smoke" });
+
   await page.goto("/");
 
   await expect(page).toHaveURL(/\/projects$/);

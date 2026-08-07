@@ -1,35 +1,41 @@
 /**
- * Better Auth 本実装までの暫定セッション取得層（M2 UI 着手にあたり導入）。
+ * セッション取得層。Better Auth のセッション取得結果を `AuthSession` に
+ * 詰め替えて返す。呼び出し側（`getSession()` のシグネチャ）は変えない
+ * （以前の暫定実装からの移行時に約束していた契約）。
  *
- * Better Auth は未修正の Critical 脆弱性があるため導入を保留している
- * （`lib/auth/types.ts` 参照）。一方で各ドメインの service.ts 側は
- * `session: AuthSession | null` を受け取る形で実装済みのため、UI 側の
- * Server Actions / Server Components が呼び出すセッション取得口だけを
- * 先に用意する。Cookie に入れた開発用ユーザーIDをそのまま `AuthSession` として
- * 返すだけで、実際の認証（ログイン可否の判定）は行わない。
+ * `auth.api.getSession()` は1リクエスト中に複数回呼ばれうる
+ * （`getSession()` 経由と `app/layout.tsx` の表示用取得の両方から）ため、
+ * React の `cache()` でラップしてDBへの重複アクセスを避ける。
  *
- * Better Auth 導入後は本ファイルの実装だけを
- * `auth.api.getSession({ headers: await headers() })` の結果を
- * `AuthSession` に詰め替える形に差し替える想定。呼び出し側
- * （`getSession()` のシグネチャ）は変えない。
+ * ドメイン制限（決定D-07）は `lib/auth.ts` の `databaseHooks.user.create.before`
+ * で新規アカウント作成時にチェック済みだが、それだけでは
+ * `ALLOWED_EMAIL_DOMAINS` を後から狭めた場合に既存アカウントの再ログインを
+ * 弾けない。ここでも毎回のセッション取得時にドメインを再チェックすることで、
+ * 「ドメイン制限が実質唯一の防御線」（リスクR-10）という前提に対して
+ * 多層防御にする。
  */
-import { cookies } from "next/headers";
-import { DEV_SESSION_COOKIE, DEV_USERS } from "./dev-users";
+import { cache } from "react";
+import { headers } from "next/headers";
+import { auth } from "../auth";
+import { isAllowedEmailDomain } from "./domain-restriction";
 import type { AuthSession } from "./types";
 
-const DEFAULT_DEV_USER_ID = DEV_USERS[0].userId;
-
 /**
- * 現在のセッションを返す。Cookie が無い、または既知の開発用ユーザーIDで
- * なければ既定の開発用ユーザーを返す（Better Auth 導入前は「常にログイン
- * 済み」の状態になる）。未知の値を許容すると `DevUserSwitcher` の
- * `Select` がどの選択肢とも一致しない値を受け取ってしまう（Bugbot 指摘）。
+ * Better Auth の生セッション（`session`/`user` を含む）を返す。表示用に
+ * 実ユーザー名/emailが必要な箇所（`app/layout.tsx`）はこちらを直接使う。
  */
+export const getFullSession = cache(async () => {
+  return auth.api.getSession({ headers: await headers() });
+});
+
+/** 現在のセッションを返す。ドメイン制限を満たさなければ未ログイン扱い（null）。 */
 export async function getSession(): Promise<AuthSession | null> {
-  const store = await cookies();
-  const cookieUserId = store.get(DEV_SESSION_COOKIE)?.value;
-  const userId = DEV_USERS.some((u) => u.userId === cookieUserId)
-    ? (cookieUserId as string)
-    : DEFAULT_DEV_USER_ID;
-  return { userId };
+  const fullSession = await getFullSession();
+  if (!fullSession) {
+    return null;
+  }
+  if (!isAllowedEmailDomain(fullSession.user.email, process.env.ALLOWED_EMAIL_DOMAINS)) {
+    return null;
+  }
+  return { userId: fullSession.user.id };
 }

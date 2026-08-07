@@ -1,4 +1,18 @@
 import { defineConfig, devices } from "@playwright/test";
+// `@next/env` はexportsフィールドを持たない純CJSパッケージで、named importの
+// 静的検出（cjs-module-lexer）に失敗するため、default importからdestructureする。
+import nextEnv from "@next/env";
+const { loadEnvConfig } = nextEnv;
+
+// Playwright のテストプロセス（`e2e/**/*.spec.ts`）は Next.js の子プロセスとは
+// 別プロセスのため、`next start`（`webServer.command`）が自動で読む `.env.local`
+// は Playwright 自身のプロセスには反映されない。`e2e/helpers/auth.ts` が
+// `lib/auth.ts` と同じ `BETTER_AUTH_SECRET` 等でテスト用セッションを発行する
+// 必要があるため、Next.js公式の `@next/env`（`.env.local` 等の優先順位込みの
+// 読み込み処理）で明示的にロードする。`webServer.command` はデフォルトで
+// 親プロセス（Playwright）の `process.env` を継承するため、ここでロードすれば
+// 実サーバー側にも同じ値が伝わる。
+loadEnvConfig(process.cwd());
 
 export default defineConfig({
   testDir: "./e2e",
