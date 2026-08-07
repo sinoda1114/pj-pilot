@@ -141,6 +141,14 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
     setDependencyRows(dependencies);
   }
 
+  // ドラッグ確定・Undoともこの1本のキューを経由させる。Undoだけ`dragQueueRef`を
+  // 経由せず直接実行すると、キュー内で確定待ちのドラッグより先にUndoがDBの日付を
+  // 書き換えてしまい、その後に実行される古いドラッグの結果で上書きされる
+  // （またはその逆）競合が起こる（Cursor Bugbot指摘）。
+  function enqueue(task: () => Promise<void>) {
+    dragQueueRef.current = dragQueueRef.current.then(task).catch(() => {});
+  }
+
   // 引数の `changes` はそのトースト（ドラッグ1回ぶん）の変更内容をクロージャで
   // 直接受け取る。以前は共有の `pendingUndoRef`（最新1件のみ保持）を参照していたため、
   // 複数のトーストが並んでいるときに古いトーストの「元に戻す」を押しても常に
@@ -174,8 +182,8 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
     isResize: boolean,
     beforeStart: Date | undefined,
     beforeEnd: Date | undefined,
+    bypassSync: boolean,
   ) {
-    const bypassSync = shiftPressedRef.current;
     const action = isResize ? resizeTaskEndAction : moveTaskAction;
     const result = await action(projectId, taskId, deltaDays, bypassSync);
 
@@ -243,7 +251,7 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
               {line}
             </Text>
           ))}
-          <Button size="xs" variant="light" onClick={() => void handleUndo(undoChanges)}>
+          <Button size="xs" variant="light" onClick={() => enqueue(() => handleUndo(undoChanges))}>
             元に戻す
           </Button>
         </Stack>
@@ -325,12 +333,19 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
             // `api.getTask` から取得しておく（intercept 時点ではまだ内部状態に
             // 適用されていないため、ここで取得した値が「変更前」になる）。
             const before = api.getTask(ev.id);
-            // 前のドラッグのサーバ確定を待ってから次を実行する（直列化、上記コメント参照）。
-            // `applyDragChange` 自体は内部で全エラーを `notifications` に変換して
-            // 握りつぶす設計だが、万一の例外でチェーンが途切れないよう保険で catch する。
-            dragQueueRef.current = dragQueueRef.current
-              .then(() => applyDragChange(String(ev.id), diff, isResize, before?.start, before?.end))
-              .catch(() => {});
+            // Shiftキーの押下状態は intercept 時点（ドラッグ確定の瞬間）でスナップ
+            // ショットを取る。キュー内で待機して実行が遅れる `applyDragChange` の
+            // 内部で都度 `shiftPressedRef.current` を読むと、キュー待機中にユーザーが
+            // Shiftを離した場合、決定D-08（Shiftドラッグは連動を切る）に反して
+            // 連動ONのまま確定してしまう（Cursor Bugbot指摘）。
+            const bypassSync = shiftPressedRef.current;
+            // 前のドラッグ/Undoのサーバ確定を待ってから次を実行する（直列化、
+            // `enqueue` 定義部のコメント参照）。`applyDragChange` 自体は内部で全
+            // エラーを `notifications` に変換して握りつぶす設計だが、万一の例外で
+            // チェーンが途切れないよう `enqueue` 側で保険の catch をしている。
+            enqueue(() =>
+              applyDragChange(String(ev.id), diff, isResize, before?.start, before?.end, bypassSync),
+            );
 
             return true; // 楽観的にローカル反映を許可し、結果はサーバ確定後に上書きする。
           });
