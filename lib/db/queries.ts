@@ -6,7 +6,7 @@
  */
 
 import type { ResultSet } from "@libsql/client";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { projects, taskDependencies, tasks } from "./schema";
 import type * as schema from "./schema";
@@ -97,4 +97,17 @@ export async function listActiveTasksByProject(db: Db, projectId: string) {
  */
 export async function listDependenciesByProject(db: Db, projectId: string) {
   return db.select().from(taskDependencies).where(eq(taskDependencies.projectId, projectId));
+}
+
+/**
+ * ゴミ箱画面（M1 #9c）用。指定したプロジェクトの論理削除済み（`deleted_at IS NOT NULL`）
+ * タスクのみを返す。生存タスクのみを返す他のヘルパーとは逆に、ここでは意図的に
+ * 削除済みのものだけを絞り込む（§3.2 の「絞り込みの書き忘れ防止」の考え方を、
+ * ゴミ箱という「削除済みだけを見せたい」画面にもそのまま適用する）。
+ */
+export async function listDeletedTasksByProject(db: Db, projectId: string) {
+  return db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.projectId, projectId), isNotNull(tasks.deletedAt)));
 }
