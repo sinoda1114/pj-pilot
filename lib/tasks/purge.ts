@@ -28,7 +28,7 @@
 
 import { and, inArray, isNotNull, lt, or, type SQL } from "drizzle-orm";
 import type { LibSQLDatabase } from "drizzle-orm/libsql";
-import { projects, taskAssignees, taskDependencies, tasks } from "../db/schema";
+import { projectMembers, projects, taskAssignees, taskDependencies, tasks } from "../db/schema";
 import type * as schema from "../db/schema";
 
 /** ゴミ箱の保持期間（決定 D-05）。 */
@@ -43,6 +43,8 @@ export interface PurgeTrashResult {
   purgedAssigneeCount: number;
   /** 上記タスクに紐づいていた `task_dependencies` の行数。 */
   purgedDependencyCount: number;
+  /** 物理削除したプロジェクトに紐づいていた `project_members` の行数。 */
+  purgedMemberCount: number;
 }
 
 /** `now` から見て「30日超前」の境界時刻を返す。`deleted_at < cutoff` が物理削除の対象。 */
@@ -76,32 +78,41 @@ export async function purgeExpiredTrash(
   ) as SQL;
   const taskIdsToPurge = db.select({ id: tasks.id }).from(tasks).where(isTaskToPurge);
 
-  // 4文とも常に発行する。`db.batch()` の型が空配列を許さない非空タプルを要求するため
+  // 5文とも常に発行する。`db.batch()` の型が空配列を許さない非空タプルを要求するため
   // 分岐で組み立てる必要があった旧実装と異なり、条件式は「マッチ0件」でも有効な SQL なので
   // 分岐が不要になっている。projects を最後に削除するのは、それより前の文の中の
   // `expiredProjectIds` サブクエリがまだ削除されていない projects 行を参照するため。
-  const [deletedAssignees, deletedDependencies, deletedTasks, deletedProjects] = await db.batch([
-    db
-      .delete(taskAssignees)
-      .where(inArray(taskAssignees.taskId, taskIdsToPurge))
-      .returning({ taskId: taskAssignees.taskId }),
-    db
-      .delete(taskDependencies)
-      .where(
-        or(
-          inArray(taskDependencies.predecessorId, taskIdsToPurge),
-          inArray(taskDependencies.successorId, taskIdsToPurge),
-        ),
-      )
-      .returning({ id: taskDependencies.id }),
-    db.delete(tasks).where(isTaskToPurge).returning({ id: tasks.id }),
-    db.delete(projects).where(isExpiredProject).returning({ id: projects.id }),
-  ]);
+  // project_members も同じ理由で projects より前に削除する必要がある
+  // （`/security-review` 指摘: 元実装は project_members を消しておらず、
+  // プロジェクト削除のたびに孤児が積み上がっていた）。
+  const [deletedAssignees, deletedDependencies, deletedTasks, deletedMembers, deletedProjects] =
+    await db.batch([
+      db
+        .delete(taskAssignees)
+        .where(inArray(taskAssignees.taskId, taskIdsToPurge))
+        .returning({ taskId: taskAssignees.taskId }),
+      db
+        .delete(taskDependencies)
+        .where(
+          or(
+            inArray(taskDependencies.predecessorId, taskIdsToPurge),
+            inArray(taskDependencies.successorId, taskIdsToPurge),
+          ),
+        )
+        .returning({ id: taskDependencies.id }),
+      db.delete(tasks).where(isTaskToPurge).returning({ id: tasks.id }),
+      db
+        .delete(projectMembers)
+        .where(inArray(projectMembers.projectId, expiredProjectIds))
+        .returning({ userId: projectMembers.userId }),
+      db.delete(projects).where(isExpiredProject).returning({ id: projects.id }),
+    ]);
 
   return {
     purgedProjectCount: deletedProjects.length,
     purgedTaskCount: deletedTasks.length,
     purgedAssigneeCount: deletedAssignees.length,
     purgedDependencyCount: deletedDependencies.length,
+    purgedMemberCount: deletedMembers.length,
   };
 }

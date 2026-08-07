@@ -10,6 +10,7 @@
  * トリガーできてしまう）ため、fail-closed（安全側に倒す）にする。
  */
 
+import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import type { LibSQLDatabase } from "drizzle-orm/libsql";
 import { db } from "../../../../lib/db";
@@ -18,6 +19,21 @@ import { purgeExpiredTrash } from "../../../../lib/tasks/purge";
 
 type AuthResult = { ok: true } | { ok: false; status: 401 | 500; message: string };
 
+/**
+ * 単純な `!==` 比較だとレスポンス時間の差からシークレットを推測される
+ * タイミング攻撃（CWE-208）の余地があるため、定数時間比較を使う
+ * （`/security-review` 指摘）。長さが異なる場合は `timingSafeEqual` が
+ * 例外を投げるため、その分岐だけは先に弾く。
+ */
+function isAuthorizedHeader(authHeader: string | null, secret: string): boolean {
+  const expected = Buffer.from(`Bearer ${secret}`);
+  const actual = Buffer.from(authHeader ?? "");
+  if (actual.length !== expected.length) {
+    return false;
+  }
+  return timingSafeEqual(actual, expected);
+}
+
 function checkAuthorization(request: Request): AuthResult {
   const secret = process.env.CRON_SECRET;
   if (!secret) {
@@ -25,7 +41,7 @@ function checkAuthorization(request: Request): AuthResult {
   }
 
   const authHeader = request.headers.get("authorization");
-  if (authHeader !== `Bearer ${secret}`) {
+  if (!isAuthorizedHeader(authHeader, secret)) {
     return { ok: false, status: 401, message: "Unauthorized" };
   }
 

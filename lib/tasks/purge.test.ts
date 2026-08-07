@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDb, type DbHandle } from "../db/client";
-import { projects, taskAssignees, taskDependencies, tasks } from "../db/schema";
+import { projectMembers, projects, taskAssignees, taskDependencies, tasks } from "../db/schema";
 import { purgeExpiredTrash } from "./purge";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -82,6 +82,11 @@ describe("purgeExpiredTrash（M1 #9c / §4.4(a)(b)）", () => {
     for (const task of allTasks) {
       expect(projectIds.has(task.projectId)).toBe(true);
     }
+
+    const allMembers = await handle.db.select().from(projectMembers);
+    for (const member of allMembers) {
+      expect(projectIds.has(member.projectId)).toBe(true);
+    }
   }
 
   it("何も削除済みでなければ何もしない", async () => {
@@ -94,6 +99,7 @@ describe("purgeExpiredTrash（M1 #9c / §4.4(a)(b)）", () => {
       purgedTaskCount: 0,
       purgedAssigneeCount: 0,
       purgedDependencyCount: 0,
+      purgedMemberCount: 0,
     });
     await expectNoOrphans();
   });
@@ -179,6 +185,10 @@ describe("purgeExpiredTrash（M1 #9c / §4.4(a)(b)）", () => {
       throw new Error("Failed to create expired project");
     }
 
+    await handle.db
+      .insert(projectMembers)
+      .values({ projectId: expiredProject.id, userId: "owner-1", role: "owner" });
+
     const [aliveTaskInExpiredProject] = await handle.db
       .insert(tasks)
       .values({
@@ -224,12 +234,19 @@ describe("purgeExpiredTrash（M1 #9c / §4.4(a)(b)）", () => {
     expect(result.purgedTaskCount).toBe(2);
     expect(result.purgedAssigneeCount).toBe(1);
     expect(result.purgedDependencyCount).toBe(1);
+    expect(result.purgedMemberCount).toBe(1);
 
     const remainingProject = await handle.db
       .select()
       .from(projects)
       .where(eq(projects.id, expiredProject.id));
     expect(remainingProject).toHaveLength(0);
+
+    const remainingMembers = await handle.db
+      .select()
+      .from(projectMembers)
+      .where(eq(projectMembers.projectId, expiredProject.id));
+    expect(remainingMembers).toHaveLength(0);
 
     const remainingTasksInProject = await handle.db
       .select()
