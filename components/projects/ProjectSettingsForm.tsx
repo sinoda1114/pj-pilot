@@ -40,6 +40,16 @@ export function ProjectSettingsForm({ projectId, dependencySyncEnabled }: Projec
         message: value ? "依存連動をONにしました" : "依存連動をOFFにしました",
       });
       router.refresh();
+    } catch (error) {
+      // `updateProjectAction` が予期しない例外を投げた場合（ネットワークエラー等）、
+      // 楽観的に反映した `checked` がDBの実際の値と食い違ったまま残ってしまう
+      // （TaskDrawer.tsx の handleSubmit と同じ catch パターン、Amazon Q レビュー指摘）。
+      setChecked(previous);
+      notifications.show({
+        color: "red",
+        title: "予期しないエラーが発生しました",
+        message: error instanceof Error ? error.message : "しばらくしてから再度お試しください",
+      });
     } finally {
       setSubmitting(false);
     }
