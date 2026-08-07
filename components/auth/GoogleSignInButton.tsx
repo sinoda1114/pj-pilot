@@ -15,9 +15,14 @@ export function GoogleSignInButton() {
       // 例外としてthrowせず `{ data, error }` で返す（`@better-fetch/fetch` の
       // 既定動作）。catch は実際のネットワーク例外用で、`error` も別途見る
       // 必要がある（見ないとログイン失敗時にボタンが読み込み中のまま固まる）。
+      // errorCallbackURLを指定しないと、ドメイン制限（lib/auth.tsの
+      // databaseHooks.user.create.before）で拒否された場合にBetter Auth既定の
+      // エラー画面へ飛ばされ、/sign-inの日本語案内（?error=付き）が
+      // 表示されない（Devinレビュー指摘）。
       const { error } = await authClient.signIn.social({
         provider: "google",
         callbackURL: "/projects",
+        errorCallbackURL: "/sign-in",
       });
       if (error) {
         setSubmitting(false);

@@ -13,6 +13,7 @@
  * `BETTER_AUTH_SECRET`/DBファイルを使わないと、発行したCookieがサーバー側で
  * 検証できない。
  */
+import { eq } from "drizzle-orm";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { testUtils } from "better-auth/plugins";
@@ -53,11 +54,19 @@ export async function createTestUser(overrides: { email: string; name: string })
       throw new Error("testUtilsプラグインが有効になっていません");
     }
 
-    const user = test.createUser({ email: overrides.email, name: overrides.name });
-    const saved = await test.saveUser(user);
-    const { cookies } = await test.login({ userId: saved.id });
+    // email はUNIQUE制約付き（lib/db/schema/auth.ts）。ローカルでDBをリセットせず
+    // `npm run test:e2e` を再実行した場合や、Playwrightのリトライで`beforeAll`が
+    // 再実行された場合に同じメールアドレスで再作成しようとして失敗しないよう、
+    // 既存ユーザーがあれば再利用する（Devinレビュー指摘）。
+    const existing = await db.query.user.findFirst({
+      where: eq(schema.user.email, overrides.email),
+    });
+    const userId = existing
+      ? existing.id
+      : (await test.saveUser(test.createUser({ email: overrides.email, name: overrides.name }))).id;
+    const { cookies } = await test.login({ userId });
 
-    return { userId: saved.id, cookies };
+    return { userId, cookies };
   } finally {
     client.close();
   }
