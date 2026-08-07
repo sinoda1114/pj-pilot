@@ -118,10 +118,17 @@ turso db tokens create pj-pilot             # → TURSO_AUTH_TOKEN
 取得した値は Vercel ダッシュボードにのみ入力する。リポジトリにコミットしない。
 
 Vercel 連携後、初回のみマイグレーションを本番/Preview DBに当てる必要がある
-（ローカルから対象DBを指してどちらか片方ずつ実行）:
+（ローカルから対象DBを指してどちらか片方ずつ実行）。`drizzle-kit` は `dotenv` 経由で
+カレントディレクトリの `.env` を自動読み込みするため、コマンドライン引数に直接
+シェル変数代入で秘密情報を渡さない（シェル履歴に平文で残る。CWE-214）。
 
 ```bash
-TURSO_DATABASE_URL=<対象> TURSO_AUTH_TOKEN=<対象> npm run db:migrate
+cat > .env <<'EOF'
+TURSO_DATABASE_URL=<対象>
+TURSO_AUTH_TOKEN=<対象>
+EOF
+npm run db:migrate
+rm .env   # 使い終わったら必ず削除する（.gitignore済みだが残さない）
 ```
 
 ## 5. Google OAuth クライアント（§10.5、優先度低）
