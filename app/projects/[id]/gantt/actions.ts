@@ -175,17 +175,21 @@ export async function undoDateChangesAction(
   }
 }
 
+export type CreateDependencyActionResult =
+  | { ok: true; dependencyId: string }
+  | { ok: false; message: string };
+
 /** Gantt上での依存作成（FS固定、決定は`lib/dependencies/service.ts`側で検証済み）。 */
 export async function createDependencyAction(
   projectId: string,
   predecessorId: string,
   successorId: string,
-): Promise<ActionResult> {
+): Promise<CreateDependencyActionResult> {
   try {
     const session = await getSession();
-    await createDependency(db, session, projectId, predecessorId, successorId);
+    const dependency = await createDependency(db, session, projectId, predecessorId, successorId);
     revalidatePath(`/projects/${projectId}/gantt`);
-    return { ok: true };
+    return { ok: true, dependencyId: dependency.id };
   } catch (error) {
     return toActionError(error);
   }
@@ -197,6 +201,18 @@ export async function deleteDependencyAction(
 ): Promise<ActionResult> {
   try {
     const session = await getSession();
+
+    // `dependencyId` が本当にこの `projectId` に属するかを検証してから削除する。
+    // `lib/dependencies/service.ts` の `deleteDependency` は `dependencyId` だけで
+    // 削除できる既存実装（決定D-15と同様、依存の削除も全ログインユーザーに
+    // 開いている）だが、Server Action は直接呼び出し可能な公開エンドポイントで
+    // もあるため、ログイン済みの誰もが無関係な他プロジェクトの `dependencyId` を
+    // 渡して削除できてしまう（Cursor Bugbot指摘、undoで直したIDORと同種）。
+    const projectDependencies = await listDependenciesByProject(db, projectId);
+    if (!projectDependencies.some((d) => d.id === dependencyId)) {
+      throw new NotFoundError("依存が見つかりません");
+    }
+
     await deleteDependency(db, session, dependencyId);
     revalidatePath(`/projects/${projectId}/gantt`);
     return { ok: true };

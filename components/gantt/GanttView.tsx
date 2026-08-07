@@ -86,17 +86,18 @@ const SKIP_REASON_LABEL: Record<"pinned" | "deleted", string> = {
   deleted: "削除済みのため",
 };
 
-interface PendingUndo {
-  changes: { id: string; startDate: string; endDate: string }[];
-}
-
 export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
   // Server Component から渡された初期データを保持しつつ、ドラッグ確定後の
   // サーバ確定結果は `api.exec("update-task", ...)` で SVAR 内部状態に直接
   // 反映する（`revalidatePath` によるページ全体の再取得だけに頼ると、
   // Gantt のスクロール位置や選択状態が毎回リセットされてしまうため）。
   const apiRef = useRef<IApi | null>(null);
-  const pendingUndoRef = useRef<PendingUndo | null>(null);
+  // `update-task` の intercept は `void applyDragChange(...)` で非同期に投げっぱなしに
+  // すると、1回目のドラッグのサーバ確定（DB読み書き）が終わる前に2回目のドラッグが
+  // 割り込み、2回目が「1回目の変更前」の古いDB状態を基に伝播を計算してしまう
+  // （Cursor Bugbot指摘）。このPromiseチェーンで直列化し、常に前の確定が完了して
+  // から次のドラッグのサーバ処理を始めるようにする。
+  const dragQueueRef = useRef<Promise<void>>(Promise.resolve());
   // Shift ドラッグで一時的に連動を切る（決定D-08）。SVAR の update-task
   // イベント自体には修飾キー情報が含まれないため、ウィンドウ全体の
   // keydown/keyup を見て現在の押下状態を追跡する。
@@ -140,11 +141,12 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
     setDependencyRows(dependencies);
   }
 
-  async function handleUndo() {
-    const pending = pendingUndoRef.current;
-    if (!pending) return;
-
-    const result = await undoDateChangesAction(projectId, pending.changes);
+  // 引数の `changes` はそのトースト（ドラッグ1回ぶん）の変更内容をクロージャで
+  // 直接受け取る。以前は共有の `pendingUndoRef`（最新1件のみ保持）を参照していたため、
+  // 複数のトーストが並んでいるときに古いトーストの「元に戻す」を押しても常に
+  // 最新のドラッグが取り消されてしまっていた（Cursor Bugbot指摘）。
+  async function handleUndo(changes: { id: string; startDate: string; endDate: string }[]) {
+    const result = await undoDateChangesAction(projectId, changes);
     if (!result.ok) {
       notifications.show({ color: "red", title: "元に戻せませんでした", message: result.message });
       return;
@@ -152,7 +154,7 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
 
     const api = apiRef.current;
     if (api) {
-      for (const change of pending.changes) {
+      for (const change of changes) {
         api.exec("update-task", {
           id: change.id,
           task: {
@@ -163,7 +165,6 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
         });
       }
     }
-    pendingUndoRef.current = null;
     notifications.show({ color: "green", title: "元に戻しました", message: "" });
   }
 
@@ -216,13 +217,11 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
       }
     }
 
-    pendingUndoRef.current = {
-      changes: result.result.changes.map((c) => ({
-        id: c.id,
-        startDate: c.before.startDate,
-        endDate: c.before.endDate,
-      })),
-    };
+    const undoChanges = result.result.changes.map((c) => ({
+      id: c.id,
+      startDate: c.before.startDate,
+      endDate: c.before.endDate,
+    }));
 
     const movedCount = result.result.changes.length;
     const skippedBySameReason = new Map<string, number>();
@@ -244,7 +243,7 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
               {line}
             </Text>
           ))}
-          <Button size="xs" variant="light" onClick={() => void handleUndo()}>
+          <Button size="xs" variant="light" onClick={() => void handleUndo(undoChanges)}>
             元に戻す
           </Button>
         </Stack>
@@ -258,7 +257,11 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
       notifications.show({ color: "red", title: "依存の作成に失敗しました", message: result.message });
       return;
     }
+    // `id` を明示的に渡さないと SVAR が独自のIDを割り当ててしまい、後で
+    // その依存を削除しようとした際に `delete-link` が渡すIDがDBの実際の
+    // `dependencyId`（cuid2）と一致せず、削除に失敗する（Cursor Bugbot指摘）。
     apiRef.current?.exec("add-link", {
+      id: result.dependencyId,
       link: { source: predecessorId, target: successorId, type: "e2s" },
     });
   }
@@ -322,7 +325,12 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
             // `api.getTask` から取得しておく（intercept 時点ではまだ内部状態に
             // 適用されていないため、ここで取得した値が「変更前」になる）。
             const before = api.getTask(ev.id);
-            void applyDragChange(String(ev.id), diff, isResize, before?.start, before?.end);
+            // 前のドラッグのサーバ確定を待ってから次を実行する（直列化、上記コメント参照）。
+            // `applyDragChange` 自体は内部で全エラーを `notifications` に変換して
+            // 握りつぶす設計だが、万一の例外でチェーンが途切れないよう保険で catch する。
+            dragQueueRef.current = dragQueueRef.current
+              .then(() => applyDragChange(String(ev.id), diff, isResize, before?.start, before?.end))
+              .catch(() => {});
 
             return true; // 楽観的にローカル反映を許可し、結果はサーバ確定後に上書きする。
           });

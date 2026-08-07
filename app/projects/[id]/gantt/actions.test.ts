@@ -242,7 +242,7 @@ describe("app/projects/[id]/gantt/actions", () => {
   });
 
   describe("createDependencyAction / deleteDependencyAction", () => {
-    it("依存を新規作成できる", async () => {
+    it("依存を新規作成できる（実DBの依存IDが返る）", async () => {
       state.session = SESSION;
       const { project, b } = await setupProjectWithChain();
       const [c] = await handle.db
@@ -256,6 +256,15 @@ describe("app/projects/[id]/gantt/actions", () => {
       const result = await createDependencyAction(project.id, b.id, c.id);
 
       expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // クライアント側（GanttView）が `add-link` に渡すIDとしてそのまま使うため、
+      // SVAR側が独自採番したものではなく実DBのIDが返っている必要がある
+      // （Cursor Bugbot指摘: これが無いと後の delete-link が失敗する）。
+      const [created] = await handle.db
+        .select()
+        .from(taskDependencies)
+        .where(eq(taskDependencies.id, result.dependencyId));
+      expect(created).toMatchObject({ predecessorId: b.id, successorId: c.id });
     });
 
     it("循環になる依存の作成は失敗する", async () => {
@@ -270,7 +279,12 @@ describe("app/projects/[id]/gantt/actions", () => {
     it("依存を削除できる", async () => {
       state.session = SESSION;
       await setupProjectWithChain();
-      const [dependency] = await handle.db.select().from(taskDependencies);
+      // DBはテスト間で使い回されるため、テーブル全体ではなく今回作成した
+      // `projectId` に属する依存に絞って取得する。
+      const [dependency] = await handle.db
+        .select()
+        .from(taskDependencies)
+        .where(eq(taskDependencies.projectId, projectId));
       if (!dependency) {
         throw new Error("Failed to find test dependency");
       }
@@ -283,6 +297,55 @@ describe("app/projects/[id]/gantt/actions", () => {
         .from(taskDependencies)
         .where(eq(taskDependencies.id, dependency.id));
       expect(remaining).toHaveLength(0);
+    });
+
+    it("他プロジェクトの依存IDを指定した場合は失敗し、削除しない（IDOR対策）", async () => {
+      state.session = SESSION;
+      await setupProjectWithChain();
+
+      const [otherProject] = await handle.db.insert(projects).values({ name: "他PJ" }).returning();
+      if (!otherProject) {
+        throw new Error("Failed to create other test project");
+      }
+      const [otherA] = await handle.db
+        .insert(tasks)
+        .values({
+          projectId: otherProject.id,
+          title: "他PJ-A",
+          startDate: "2026-08-01",
+          endDate: "2026-08-03",
+        })
+        .returning();
+      const [otherB] = await handle.db
+        .insert(tasks)
+        .values({
+          projectId: otherProject.id,
+          title: "他PJ-B",
+          startDate: "2026-08-04",
+          endDate: "2026-08-06",
+        })
+        .returning();
+      if (!otherA || !otherB) {
+        throw new Error("Failed to create other test tasks");
+      }
+      const [otherDependency] = await handle.db
+        .insert(taskDependencies)
+        .values({ projectId: otherProject.id, predecessorId: otherA.id, successorId: otherB.id })
+        .returning();
+      if (!otherDependency) {
+        throw new Error("Failed to create other test dependency");
+      }
+
+      // `projectId`（このブロック冒頭で作った依存関係のプロジェクト）を指定しつつ、
+      // 削除対象のIDだけ他プロジェクトの依存を渡す（Cursor Bugbot指摘のIDOR）。
+      const result = await deleteDependencyAction(projectId, otherDependency.id);
+
+      expect(result.ok).toBe(false);
+      const stillExists = await handle.db
+        .select()
+        .from(taskDependencies)
+        .where(eq(taskDependencies.id, otherDependency.id));
+      expect(stillExists).toHaveLength(1);
     });
   });
 });
