@@ -3,7 +3,6 @@
  * 描画・インタラクションは `TasksPageClient`（Client Component）に委譲する。
  */
 import { notFound } from "next/navigation";
-import { Stack, Title } from "@mantine/core";
 import { getSession } from "../../../../lib/auth/session";
 import { db } from "../../../../lib/db";
 import { getActiveProject } from "../../../../lib/db/queries";
@@ -45,9 +44,6 @@ export default async function ProjectTasksPage({
   });
 
   return (
-    <Stack gap="lg">
-      <Title order={2}>{project.name}</Title>
-      <TasksPageClient projectId={projectId} tasks={taskList} assigneesByTaskId={assigneesByTaskId} />
-    </Stack>
+    <TasksPageClient projectId={projectId} tasks={taskList} assigneesByTaskId={assigneesByTaskId} />
   );
 }
