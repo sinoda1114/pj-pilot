@@ -10,6 +10,9 @@
  * 並び替えの計算は `lib/board/order.ts` の純粋関数を使い、ここでは再実装しない。
  * サーバー側（`lib/board/service.ts`）と同じ関数を通すことで、楽観更新の結果と
  * サーバーの確定結果がずれないようにする。
+ *
+ * 絞り込み（優先度・担当者）の判定も `lib/board/filter.ts` の純粋関数に寄せてある。
+ * ここで持つのは「選択された値の state」と「その結果をどう描画するか」だけ。
  */
 
 import {
@@ -31,12 +34,30 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Badge, Card, Group, Paper, Progress, Stack, Text, Title } from "@mantine/core";
+import {
+  Badge,
+  Button,
+  Card,
+  Group,
+  MultiSelect,
+  Paper,
+  Progress,
+  Stack,
+  Text,
+  Title,
+} from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import type { InferSelectModel } from "drizzle-orm";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { TaskDrawer } from "../../../../components/tasks/TaskDrawer";
+import {
+  UNASSIGNED_ASSIGNEE,
+  filterBoardTasks,
+  isBoardFilterActive,
+  listAssigneeOptions,
+  type BoardFilterCriteria,
+} from "../../../../lib/board/filter";
 import { moveAcrossColumns, reorderWithinColumn } from "../../../../lib/board/order";
 import {
   BOARD_COLUMN_ORDER,
@@ -63,6 +84,12 @@ const PRIORITY_COLORS: Record<Priority, string> = {
   high: "orange",
   urgent: "red",
 };
+
+/**
+ * 絞り込みの選択肢に出す優先度。低→緊急の順に並べる。
+ * 値は DB の enum のまま持ち、表示だけ `priorityLabel()` の日本語にする（決定 D-17）。
+ */
+const PRIORITY_VALUES = ["low", "medium", "high", "urgent"] as const satisfies readonly Priority[];
 
 /** 列の最小幅。4列が入りきらない画面幅では、この幅を保ったまま横スクロールさせる。 */
 const COLUMN_WIDTH = 280;
@@ -116,9 +143,19 @@ export function BoardClient({
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
+  // 絞り込み条件。既存のタスク一覧（TasksPageClient.tsx）と同じくローカル state で持ち、
+  // URL には載せない。
+  const [priorityFilter, setPriorityFilter] = useState<string[]>([]);
+  const [assigneeFilter, setAssigneeFilter] = useState<string[]>([]);
+
   const tasksById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
 
-  /** 列ごとの id 配列。board_order 昇順（サーバーの並びをそのまま保持している）。 */
+  /**
+   * 列ごとの id 配列。board_order 昇順（サーバーの並びをそのまま保持している）。
+   *
+   * **絞り込みの影響を受けない「その列の全タスク」**であることが重要。
+   * D&D の `toIndex` はここから算出する（`handleDragEnd` のコメント参照）。
+   */
   const columns = useMemo(() => {
     const result = {} as Record<BoardStatus, string[]>;
     for (const status of BOARD_STATUSES) {
@@ -126,6 +163,50 @@ export function BoardClient({
     }
     return result;
   }, [tasks]);
+
+  const criteria = useMemo<BoardFilterCriteria>(
+    () => ({ priorities: priorityFilter, assignees: assigneeFilter }),
+    [priorityFilter, assigneeFilter],
+  );
+  const filtering = isBoardFilterActive(criteria);
+
+  /** 絞り込みを通過したタスク。件数表示にも使う。 */
+  const visibleTasks = useMemo(
+    () => filterBoardTasks(tasks, criteria, assigneesByTaskId),
+    [tasks, criteria, assigneesByTaskId],
+  );
+
+  /**
+   * 実際に描画する列ごとの id 配列（＝絞り込み後）。
+   *
+   * `columns` とは**別に**持つ。描画とバッジの件数はこちらを使い、
+   * D&D の位置計算は `columns`（全件）だけを使う、という分担にしている。
+   */
+  const visibleColumns = useMemo(() => {
+    const visibleIds = new Set(visibleTasks.map((task) => task.id));
+    const result = {} as Record<BoardStatus, string[]>;
+    for (const status of BOARD_STATUSES) {
+      result[status] = columns[status].filter((id) => visibleIds.has(id));
+    }
+    return result;
+  }, [columns, visibleTasks]);
+
+  /** 担当者の選択肢。そのプロジェクトのタスクに実際に割り当てられている人だけを出す。 */
+  const assigneeOptions = useMemo(
+    () => [
+      { value: UNASSIGNED_ASSIGNEE, label: "担当者なし" },
+      ...listAssigneeOptions(tasks, assigneesByTaskId).map((userId) => ({
+        value: userId,
+        label: userId,
+      })),
+    ],
+    [tasks, assigneesByTaskId],
+  );
+
+  function clearFilters() {
+    setPriorityFilter([]);
+    setAssigneeFilter([]);
+  }
 
   /** ドロップ先の列を求める。カードの上に落ちた場合はそのカードが属する列を使う。 */
   function resolveTargetColumn(overId: string): BoardStatus | null {
@@ -177,6 +258,16 @@ export function BoardClient({
     const fromStatus = task.status as BoardStatus;
     const overId = String(over.id);
     // 列そのものに落ちた場合は末尾へ、カードの上に落ちた場合はそのカードの位置へ。
+    //
+    // **絞り込み中でも必ず `columns`（絞り込み前の全件）から index を取ること。**
+    // `visibleColumns`（見た目の並び）から取ると、隠れているカードの分だけ位置が
+    // 詰まった index になり、サーバーには「絞り込みを解除したときの位置」として
+    // 別の場所が保存されてしまう。
+    //
+    // ドロップ先 `overId` は必ず「表示中のカードの id」か「列の id」のどちらかで、
+    // 表示中のカードは当然その列の全件にも含まれる。したがって
+    // `columns[toStatus].indexOf(overId)` は常に見つかり、しかもそれは
+    // 「掴んだカードを、そのカードが今いる絶対位置へ置く」という意図どおりの値になる。
     const toIndex = (BOARD_STATUSES as readonly string[]).includes(overId)
       ? columns[toStatus].length
       : columns[toStatus].indexOf(overId);
@@ -205,6 +296,8 @@ export function BoardClient({
 
     setTasks(optimistic);
 
+    // サーバーへ渡す位置。`optimistic` は絞り込みを通していない全件なので、
+    // ここで求まる index も「その列の全タスクの中での位置」になる。
     const normalizedIndex = optimistic
       .filter((row) => row.status === toStatus)
       .findIndex((row) => row.id === taskId);
@@ -236,6 +329,49 @@ export function BoardClient({
 
   return (
     <Stack gap="md">
+      <Group align="flex-end" gap="md" wrap="wrap">
+        {/*
+          `placeholder` を選択が無いときだけに絞っているのは、Mantine の MultiSelect が
+          選択済みの Pill があっても placeholder を出し続け、「すべて」と選択中の値が
+          並んで見えてしまうため。
+        */}
+        <MultiSelect
+          label="優先度"
+          placeholder={priorityFilter.length === 0 ? "すべて" : undefined}
+          data={PRIORITY_VALUES.map((value) => ({ value, label: priorityLabel(value) }))}
+          value={priorityFilter}
+          onChange={setPriorityFilter}
+          clearable
+          w={240}
+        />
+        <MultiSelect
+          label="担当者"
+          placeholder={assigneeFilter.length === 0 ? "すべて" : undefined}
+          data={assigneeOptions}
+          value={assigneeFilter}
+          onChange={setAssigneeFilter}
+          clearable
+          searchable
+          w={240}
+          nothingFoundMessage="該当する担当者がいません"
+        />
+
+        {/*
+          絞り込み中であることを必ず画面に出す。出していないと、条件を掛けたことを
+          忘れたときに「タスクが消えた」と誤解される。
+        */}
+        {filtering ? (
+          <Group gap="xs" data-testid="board-filter-status">
+            <Text size="sm" c="dimmed">
+              絞り込み中: 全{tasks.length}件中{visibleTasks.length}件
+            </Text>
+            <Button variant="subtle" size="compact-sm" onClick={clearFilters}>
+              絞り込みを解除
+            </Button>
+          </Group>
+        ) : null}
+      </Group>
+
       <DndContext
         // 明示的な id を渡す。省略すると内部の useId 由来の識別子が SSR と
         // クライアントでずれ、ハイドレーション警告の原因になる。
@@ -251,9 +387,12 @@ export function BoardClient({
             <BoardColumn
               key={status}
               status={status}
-              taskIds={columns[status]}
+              // 描画も件数バッジも絞り込み後。絞り込んでいるのに全件数が出ていると
+              // 「バッジの数だけカードが無い」という誤解のもとになる。
+              taskIds={visibleColumns[status]}
               tasksById={tasksById}
               assigneesByTaskId={assigneesByTaskId}
+              filtering={filtering}
               onCardClick={setEditingTask}
             />
           ))}
@@ -292,12 +431,15 @@ function BoardColumn({
   taskIds,
   tasksById,
   assigneesByTaskId,
+  filtering,
   onCardClick,
 }: {
   status: BoardStatus;
+  /** 絞り込み後の id 配列。件数バッジもこの長さを出す。 */
   taskIds: string[];
   tasksById: Map<string, Task>;
   assigneesByTaskId: Record<string, string[]>;
+  filtering: boolean;
   onCardClick: (task: Task) => void;
 }) {
   // 列そのものを droppable にする。SortableContext は items が空だとドロップ判定を
@@ -321,7 +463,7 @@ function BoardColumn({
         <Title order={4} size="h6">
           {statusLabel(status)}
         </Title>
-        <Badge color={STATUS_COLORS[status]} variant="light">
+        <Badge color={STATUS_COLORS[status]} variant="light" data-testid={`board-count-${status}`}>
           {taskIds.length}
         </Badge>
       </Group>
@@ -330,7 +472,7 @@ function BoardColumn({
         <Stack gap="xs" mih={80}>
           {taskIds.length === 0 ? (
             <Text size="sm" c="dimmed">
-              タスクがありません
+              {filtering ? "条件に一致するタスクがありません" : "タスクがありません"}
             </Text>
           ) : (
             taskIds.map((id) => {

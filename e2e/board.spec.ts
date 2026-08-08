@@ -166,3 +166,79 @@ test("Drawerで編集して保存すると、カードの表示も更新され�
     page.getByTestId("board-card").filter({ hasText: "ボードC（更新済み）" }),
   ).toBeVisible({ timeout: 10_000 });
 });
+
+/**
+ * カンバンの絞り込み（計画書 §9 の未決事項 Q-3 を「付ける」に変更した分）。
+ *
+ * 上のテスト群はカードの並びを実際に動かして共有状態を書き換えていくため、
+ * 絞り込みの検証は**専用のプロジェクトを別に作って**行う。同じプロジェクトを使うと
+ * 実行順やリトライで初期状態が変わり、期待値が壊れる。
+ */
+test.describe("絞り込み", () => {
+  let filterProjectId: string;
+
+  test.beforeAll(async () => {
+    const project = await createProject(
+      handle.db,
+      { userId: session.userId },
+      { name: `E2E カンバン絞り込み検証用 ${Date.now()}` },
+    );
+    filterProjectId = project.id;
+
+    const rows = [
+      { title: "絞込用-緊急", priority: "urgent" },
+      { title: "絞込用-高", priority: "high" },
+      { title: "絞込用-中", priority: "medium" },
+    ] as const;
+
+    for (const [index, row] of rows.entries()) {
+      await createTask(handle.db, { userId: session.userId }, filterProjectId, {
+        title: row.title,
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        status: "todo",
+        priority: row.priority,
+        boardOrder: index,
+      });
+    }
+  });
+
+  test("優先度で絞り込むと該当カードだけが残り、解除すると全件に戻る", async ({ page }) => {
+    await page.goto(`/projects/${filterProjectId}/board`);
+    await expect(page.getByTestId("board-column-todo")).toBeVisible();
+    expect(await columnTitles(page, "todo")).toEqual(["絞込用-緊急", "絞込用-高", "絞込用-中"]);
+    await expect(page.getByTestId("board-count-todo")).toHaveText("3");
+    // 絞り込んでいない間は「絞り込み中」の表示を出さない
+    await expect(page.getByTestId("board-filter-status")).toBeHidden();
+
+    // 「高」だけを選ぶ
+    await page.getByLabel("優先度").click();
+    await page.getByRole("option", { name: "高", exact: true }).click();
+    await page.keyboard.press("Escape");
+
+    await expect.poll(() => columnTitles(page, "todo"), { timeout: 10_000 }).toEqual(["絞込用-高"]);
+    // 件数バッジは絞り込み後の件数
+    await expect(page.getByTestId("board-count-todo")).toHaveText("1");
+    // 絞り込み中である旨が出ている
+    await expect(page.getByTestId("board-filter-status")).toContainText("全3件中1件");
+
+    // 「緊急」も足すと OR で2件になる
+    await page.getByLabel("優先度").click();
+    await page.getByRole("option", { name: "緊急", exact: true }).click();
+    await page.keyboard.press("Escape");
+
+    await expect
+      .poll(() => columnTitles(page, "todo"), { timeout: 10_000 })
+      .toEqual(["絞込用-緊急", "絞込用-高"]);
+    await expect(page.getByTestId("board-count-todo")).toHaveText("2");
+
+    // 解除すると全件に戻る
+    await page.getByRole("button", { name: "絞り込みを解除" }).click();
+
+    await expect
+      .poll(() => columnTitles(page, "todo"), { timeout: 10_000 })
+      .toEqual(["絞込用-緊急", "絞込用-高", "絞込用-中"]);
+    await expect(page.getByTestId("board-count-todo")).toHaveText("3");
+    await expect(page.getByTestId("board-filter-status")).toBeHidden();
+  });
+});
