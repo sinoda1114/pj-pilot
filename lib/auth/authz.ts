@@ -10,9 +10,8 @@
  */
 
 import { and, eq } from "drizzle-orm";
-import type { LibSQLDatabase } from "drizzle-orm/libsql";
+import type { Db } from "../db/queries";
 import { projectMembers } from "../db/schema";
-import type * as schema from "../db/schema";
 import { ForbiddenError, UnauthorizedError } from "./errors";
 import type { AuthSession } from "./types";
 
@@ -36,7 +35,10 @@ export function requireLogin(session: AuthSession | null): AuthSession {
  * （Devin レビュー指摘。M2 以降、実際の呼び出し箇所ができた時点で判断する）。
  */
 export async function requireProjectOwner(
-  db: LibSQLDatabase<typeof schema>,
+  // `db.transaction` の `tx` からも呼べるよう、`LibSQLDatabase` ではなく共通の基底型で
+  // 受ける（`lib/db/queries.ts` の `Db` の注記と同じ理由）。`restoreProject` は
+  // 「削除済みか」の確認と owner 判定と UPDATE を1トランザクションにまとめている。
+  db: Db,
   session: AuthSession,
   projectId: string,
 ): Promise<void> {

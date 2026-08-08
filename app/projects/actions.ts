@@ -24,6 +24,7 @@ import {
 import {
   createProject,
   deleteProject,
+  restoreProject,
   updateProject,
   type UpdateProjectInput,
 } from "../../lib/projects/service";
@@ -174,6 +175,30 @@ export async function deleteProjectAction(projectId: unknown): Promise<ActionRes
   revalidatePath("/projects");
   // 削除後にキャッシュされたレイアウト（ヘッダーのPJ名等）が残らないようにする
   // （updateProjectActionと同様。Bugbot指摘）。
+  revalidatePath(`/projects/${validProjectId}`, "layout");
+  return { ok: true };
+}
+
+/**
+ * ゴミ箱から論理削除済みのプロジェクトを戻す（Issue #65）。
+ *
+ * 決定 D-15 に合わせて owner 限定。判定は `restoreProject` が行うので、ここでは
+ * 認可の入口（`requireLogin`）と ID の形だけを見る。
+ */
+export async function restoreProjectAction(projectId: unknown): Promise<ActionResult> {
+  let validProjectId: string;
+  try {
+    const session = await getSession();
+    requireLogin(session);
+
+    validProjectId = assertValidId(projectId, "projectId");
+    await restoreProject(db, session, validProjectId);
+  } catch (error) {
+    return toActionResult(error);
+  }
+
+  revalidatePath("/projects");
+  // 復元した PJ の配下ページのレイアウト（ヘッダーのPJ名）も貼り直す。
   revalidatePath(`/projects/${validProjectId}`, "layout");
   return { ok: true };
 }
