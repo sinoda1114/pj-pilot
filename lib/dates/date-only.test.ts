@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { addDaysToDateOnly, diffInCalendarDays, isValidDateOnly } from "./date-only";
+import {
+  addDaysToDateOnly,
+  diffInCalendarDays,
+  isValidDateOnly,
+  todayInTimeZone,
+} from "./date-only";
 
 describe("date-only", () => {
   describe("isValidDateOnly", () => {
@@ -56,6 +61,42 @@ describe("date-only", () => {
 
     it("同じ日付は 0 を返す", () => {
       expect(diffInCalendarDays("2026-08-06", "2026-08-06")).toBe(0);
+    });
+  });
+
+  /**
+   * Phase 2 §6.3。Vercel のサーバーは UTC で動くため、素朴に日付を取ると
+   * JST の 0:00〜9:00 の間はサーバー側の日付が1日前になり、
+   * ダッシュボードの「期限超過」判定が丸1日ずれる。
+   */
+  describe("todayInTimeZone", () => {
+    it("JST の 0:00 直後は、UTC ではまだ前日でも当日の日付を返す", () => {
+      // 2026-08-08 00:30 JST = 2026-08-07 15:30 UTC
+      const now = new Date("2026-08-07T15:30:00Z");
+
+      expect(todayInTimeZone("Asia/Tokyo", now)).toBe("2026-08-08");
+      // 取り違えていないことを示すため、UTC 側も併せて確認する
+      expect(todayInTimeZone("UTC", now)).toBe("2026-08-07");
+    });
+
+    it("JST の 23:59 は、UTC では翌日でも当日の日付を返す", () => {
+      // 2026-08-08 23:59 JST = 2026-08-08 14:59 UTC（UTC 側はまだ同日）
+      expect(todayInTimeZone("Asia/Tokyo", new Date("2026-08-08T14:59:00Z"))).toBe("2026-08-08");
+      // 2026-08-09 08:00 JST = 2026-08-08 23:00 UTC
+      expect(todayInTimeZone("Asia/Tokyo", new Date("2026-08-08T23:00:00Z"))).toBe("2026-08-09");
+    });
+
+    it("ゼロ埋めされた YYYY-MM-DD を返す（date-only 文字列の辞書順比較が成立する形）", () => {
+      const result = todayInTimeZone("Asia/Tokyo", new Date("2026-01-05T00:00:00Z"));
+
+      expect(result).toBe("2026-01-05");
+      expect(isValidDateOnly(result)).toBe(true);
+    });
+
+    it("月末・年末をまたぐ境界でも正しい日付を返す", () => {
+      // 2027-01-01 00:00 JST = 2026-12-31 15:00 UTC
+      expect(todayInTimeZone("Asia/Tokyo", new Date("2026-12-31T15:00:00Z"))).toBe("2027-01-01");
+      expect(todayInTimeZone("UTC", new Date("2026-12-31T15:00:00Z"))).toBe("2026-12-31");
     });
   });
 });

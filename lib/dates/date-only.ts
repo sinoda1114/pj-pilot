@@ -62,3 +62,31 @@ export function diffInCalendarDays(a: string, b: string): number {
   const msPerDay = 24 * 60 * 60 * 1000;
   return Math.round((toUtcNoon(a).getTime() - toUtcNoon(b).getTime()) / msPerDay);
 }
+
+/**
+ * 指定したタイムゾーンにおける「今日」を date-only 文字列で返す（Phase 2 §6.3）。
+ *
+ * このファイルの他の関数と違い、ここだけはタイムゾーンを明示的に扱う。
+ * 「今日」は絶対時刻からしか決まらず、どのタイムゾーンで見るかで答えが変わるためで、
+ * §3.2 の「タイムゾーン変換をしない」規約と矛盾しない（変換ではなく、境界での確定）。
+ *
+ * **Vercel のサーバーは UTC で動く。** 素朴に `new Date().toISOString().slice(0, 10)` と
+ * 書くと、JST の 0:00〜9:00 の間はサーバー側の日付が1日前になり、ダッシュボードの
+ * 「期限超過」判定が丸1日ずれる。呼び出し側は必ず対象のタイムゾーン（本件では
+ * `"Asia/Tokyo"`）を明示すること。
+ *
+ * `en-CA` ロケールを使うのは、その日付書式が ISO と同じゼロ埋めの `YYYY-MM-DD` に
+ * なるため。手で `getFullYear()` 等を組み立てるとタイムゾーン適用を取りこぼすので、
+ * `Intl` に整形ごと任せる。
+ *
+ * @param timeZone IANA タイムゾーン名（例: `"Asia/Tokyo"`）
+ * @param now 判定の基準時刻。テストで境界時刻を固定するために差し替えられる
+ */
+export function todayInTimeZone(timeZone: string, now: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(now);
+}

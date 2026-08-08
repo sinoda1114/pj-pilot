@@ -31,6 +31,7 @@ export type CreateTaskInput = Pick<TaskRow, "title" | "startDate" | "endDate"> &
       | "actualHours"
       | "isPinned"
       | "sortOrder"
+      | "boardOrder"
     >
   >;
 
@@ -49,6 +50,7 @@ export type UpdateTaskInput = Partial<
     | "actualHours"
     | "isPinned"
     | "sortOrder"
+    | "boardOrder"
   >
 >;
 
@@ -75,6 +77,9 @@ const EDITABLE_TASK_FIELDS = [
   "actualHours",
   "isPinned",
   "sortOrder",
+  // カンバンの列内の表示順（Phase 2 §4.4）。この配列に入れないと updateTask 経由では
+  // 一切書き込めない（マスアサインメント防止の許可リストのため）。
+  "boardOrder",
 ] as const;
 
 function pickEditableTaskFields(
