@@ -645,6 +645,82 @@ describe("aggregateSummaryValues: 境界値（Devin Review指摘の反映）", (
   });
 });
 
+describe("moveTask: サマリーは依存で動かさない（Issue #50）", () => {
+  /**
+   * サマリーの日付は子から導出するのが正（決定 D-11）。にもかかわらず依存の後続として
+   * Δ シフトしていたため、子が動かない場合にサマリーだけがズレて永続化され、
+   * その後に子を1日でも動かすと再集計が走って**利用者が触っていない行が勝手に元へ戻る**
+   * という挙動になっていた（実測: 08-01〜08-20 → 08-13〜07-16 → 08-01〜08-20）。
+   *
+   * サマリーには Δ を適用せず、`skipped` にも入れない（ピン留め・削除済みと違い
+   * 「動かせなかった」のではなく「動かす対象ではない」ため）。ただし**枝は打ち切らない**。
+   * サマリーの先にある後続タスクは通常どおり動かす。
+   */
+  it("依存の後続がサマリーなら日付を動かさない", () => {
+    const tasks = [
+      task({ id: "X", startDate: "2026-01-01", endDate: "2026-01-05" }),
+      task({ id: "S", type: "summary", startDate: "2026-02-01", endDate: "2026-02-20" }),
+      task({ id: "C1", parentId: "S", startDate: "2026-02-01", endDate: "2026-02-20" }),
+    ];
+
+    const result = moveTask({
+      taskId: "X",
+      deltaDays: 3,
+      tasks,
+      dependencies: [dep("X", "S")],
+      dependencySyncEnabled: true,
+    });
+
+    expect(result.changes.find((c) => c.id === "S")).toBeUndefined();
+    expect(result.changes.map((c) => c.id)).toEqual(["X"]);
+    expect(result.skipped).toEqual([{ id: "S", reason: "summary" }]);
+  });
+
+  it("サマリーで枝を打ち切る（動かない先行の後続だけを動かして順序を壊さない）", () => {
+    // ピン留め・削除済みと同じ理由。サマリーが動かないのに後続だけ動かすと、
+    // FS（先行が終わってから後続を開始）の順序が壊れる。実測では X→S→Z で
+    // X を -10 日動かすと、S が 08-05〜08-20 のままなのに Z が 08-12 始まりになり、
+    // S の終了より前に Z が始まっていた。
+    const tasks = [
+      task({ id: "X", startDate: "2026-08-01", endDate: "2026-08-03" }),
+      task({ id: "S", type: "summary", startDate: "2026-08-05", endDate: "2026-08-20" }),
+      task({ id: "C1", parentId: "S", startDate: "2026-08-05", endDate: "2026-08-20" }),
+      task({ id: "Z", startDate: "2026-08-22", endDate: "2026-08-25" }),
+    ];
+
+    const result = moveTask({
+      taskId: "X",
+      deltaDays: -10,
+      tasks,
+      dependencies: [dep("X", "S"), dep("S", "Z")],
+      dependencySyncEnabled: true,
+    });
+
+    expect(result.changes.map((c) => c.id)).toEqual(["X"]);
+    // 打ち切った理由は利用者に伝える（トーストに出す）
+    expect(result.skipped).toEqual([{ id: "S", reason: "summary" }]);
+  });
+
+  it("マイルストーンは対象外（通常どおり動く）", () => {
+    const tasks = [
+      task({ id: "X", startDate: "2026-01-01", endDate: "2026-01-05" }),
+      task({ id: "M", type: "milestone", startDate: "2026-02-01", endDate: "2026-02-01" }),
+    ];
+
+    const result = moveTask({
+      taskId: "X",
+      deltaDays: 3,
+      tasks,
+      dependencies: [dep("X", "M")],
+      dependencySyncEnabled: true,
+    });
+
+    // 子から日付を導出する仕組みが無いため、止めると Gantt から日付を変える
+    // 手段が無くなる。サマリーとは扱いを分ける。
+    expect(result.changes.map((c) => c.id).sort()).toEqual(["M", "X"]);
+  });
+});
+
 describe("moveTask: type が summary でない祖先は書き換えない（Issue #51）", () => {
   /**
    * 再集計の対象選択を `lib/tasks/summary.ts` と揃えるための回帰テスト。

@@ -18,6 +18,8 @@ let session: Awaited<ReturnType<typeof createTestUser>>;
 let projectId: string;
 let emptyProjectId: string;
 let dragProjectId: string;
+/** サマリードラッグ禁止（Issue #50）の検証用。他テストの日付を動かさないよう分ける。 */
+let summaryProjectId: string;
 let linkProjectId: string;
 
 // 2 つのテストが同じファイル DB（`file:local.db`、webServer が起動する唯一の
@@ -78,6 +80,33 @@ test.beforeAll(async () => {
       name: `E2E Ganttドラッグ連動確認 ${Date.now()}`,
     });
     dragProjectId = dragProject.id;
+
+    const summaryProject = await createProject(
+      db,
+      authSession,
+      { name: `E2E サマリードラッグ検証用 ${Date.now()}` },
+    );
+    summaryProjectId = summaryProject.id;
+    const summaryParent = await createTask(db, authSession, summaryProjectId, {
+      title: "SD親サマリー",
+      type: "summary",
+      startDate: "2026-08-10",
+      endDate: "2026-08-20",
+    });
+    await createTask(db, authSession, summaryProjectId, {
+      title: "SD子A",
+      parentId: summaryParent.id,
+      startDate: "2026-08-10",
+      endDate: "2026-08-14",
+      sortOrder: 0,
+    });
+    await createTask(db, authSession, summaryProjectId, {
+      title: "SD子B",
+      parentId: summaryParent.id,
+      startDate: "2026-08-15",
+      endDate: "2026-08-20",
+      sortOrder: 1,
+    });
     const dragA = await createTask(db, authSession, dragProjectId, {
       title: "E2Eドラッグ元タスク",
       startDate: "2026-08-10",
@@ -219,4 +248,93 @@ test("依存の無いタスク同士をクリックで依存を新規作成で�
   await clickLinkHandle(target.locator(".wx-link.wx-left"));
 
   await expect(page.locator("svg.wx-links .wx-line")).toHaveCount(1);
+});
+
+/**
+ * サマリーのバーはドラッグさせない（Issue #50）。
+ *
+ * SVAR はサマリー行のバー（`.wx-bar.wx-summary`）も通常どおりドラッグできてしまう。
+ * 動かすと子が取り残されて日付が乖離し、あとで子を1日でも動かした瞬間に再集計が
+ * 走って利用者が触っていない行が勝手に元へ戻る（実機で再現を確認した）。
+ * サマリーの期間は子から導出するのが正（決定 D-11）なので、直接の操作を禁じる。
+ */
+test("サマリーのバーはドラッグしても動かず、理由が通知される（Issue #50）", async ({ page }) => {
+  await page.goto(`/projects/${summaryProjectId}/gantt`);
+  await page.locator(".wx-gantt").waitFor();
+
+  const grid = page.locator(".wx-grid");
+  const before = await grid.innerText();
+
+  const summaryBar = page.locator(".wx-bar.wx-summary").first();
+  const box = await summaryBar.boundingBox();
+  if (!box) throw new Error("サマリーバーの座標が取得できません");
+  const childBefore = (await page.locator(".wx-bar.wx-task").first().boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 200, box.y + box.height / 2, { steps: 10 });
+  await page.mouse.up();
+
+  // 拒否の通知。`toBeVisible` の既定待ちだけだと、フル実行時に取りこぼすこと
+  // （間欠的な失敗）を確認したため、明示的に長めの待ちを与える。
+  await expect(page.getByText("サマリーの期間は子タスクから自動で決まります")).toBeVisible({
+    timeout: 10_000,
+  });
+
+  // **バーの視覚位置も戻っていること。** `false` を返すだけでは SVAR が
+  // ドラッグ中に書き換えた座標が残り、画面と DB が食い違う（実測で 100px ずれた）。
+  // 一覧のテキストだけを見ていると見逃すため、座標そのものを確認する。
+  // 位置の戻しは `api.exec` 経由の非同期な再描画なので、固定待ちではなくポーリングする。
+  // サマリーをドラッグすると SVAR は子のバーも一緒に動かすので、子も戻すこと。
+  await expect
+    .poll(
+      async () => {
+        const s = await summaryBar.boundingBox();
+        const c = await page.locator(".wx-bar.wx-task").first().boundingBox();
+        return {
+          summary: Math.round((s?.x ?? 0) - box.x),
+          child: Math.round((c?.x ?? 0) - childBefore.x),
+        };
+      },
+      { timeout: 10_000 },
+    )
+    .toEqual({ summary: 0, child: 0 });
+
+  expect(await grid.innerText()).toBe(before);
+});
+
+test("通常タスクを動かすと、サマリーは子から再計算されて追従する（Issue #50）", async ({
+  page,
+}) => {
+  await page.goto(`/projects/${summaryProjectId}/gantt`);
+  await page.locator(".wx-gantt").waitFor();
+
+  const grid = page.locator(".wx-grid");
+  // 子A（08-10〜08-14）を1日ぶん右へ動かす
+  const taskBar = page.locator(".wx-bar.wx-task").first();
+  const box = await taskBar.boundingBox();
+  if (!box) throw new Error("タスクバーの座標が取得できません");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 100, box.y + box.height / 2, { steps: 10 });
+  await page.mouse.up();
+
+  await expect(page.getByText(/件のタスクを移動しました/)).toBeVisible();
+
+  // 具体的な日付では固定しない。CI は `retries: 2` で同じ spec を再実行するため、
+  // 1回目で動かした日付が残っていると2回目の期待値が構造的に成立しない。
+  // 「サマリーの開始日が子の最小開始日と一致する」という不変条件で確認する。
+  await expect
+    .poll(
+      async () => {
+        const rows = (await grid.innerText()).split("\n").map((line) => line.trim());
+        const summaryStart = rows[rows.indexOf("SD親サマリー") + 1];
+        const childStart = rows[rows.indexOf("SD子A") + 1];
+        return { summaryStart, childStart, moved: childStart !== "2026-08-10" };
+      },
+      { timeout: 10_000 },
+    )
+    .toEqual(expect.objectContaining({ moved: true }));
+
+  const rows = (await grid.innerText()).split("\n").map((line) => line.trim());
+  expect(rows[rows.indexOf("SD親サマリー") + 1]).toBe(rows[rows.indexOf("SD子A") + 1]);
 });

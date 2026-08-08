@@ -50,6 +50,17 @@ export async function getTaskById(db: Db, taskId: string) {
   return task;
 }
 
+/**
+ * 生存・削除済みを問わず、`parentId` の直接の子を全て返す。
+ *
+ * 復元（`lib/tasks/deletion.ts` の `restoreTask`）が「同じ操作で消した子孫」を
+ * 辿るために使う。`listActiveChildren` は生存のみを返すため、削除済みの子孫を
+ * 見つけられない。
+ */
+export async function listChildrenIncludingDeleted(db: Db, parentId: string) {
+  return db.select().from(tasks).where(eq(tasks.parentId, parentId));
+}
+
 export async function listActiveChildren(db: Db, parentId: string) {
   return db
     .select()

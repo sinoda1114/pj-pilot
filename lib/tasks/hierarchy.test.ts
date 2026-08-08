@@ -323,3 +323,98 @@ describe("tasks/hierarchy", () => {
     });
   });
 });
+
+/**
+ * 決定 D-11（親タスクの日付・進捗・工数は子から自動集計）を実データで機能させる
+ * ための印付け（Issue #51 の後半）。
+ *
+ * 集計側（`lib/tasks/summary.ts` / `lib/scheduling/propagate.ts`）は
+ * `type === "summary"` の祖先しか処理しないが、その型を設定する本番経路が
+ * どこにも無かった（`scripts/seed.ts` のみ）。インデントで親子関係を作る
+ * タイミングで新しい親に印を付ける。
+ */
+describe("インデント/アウトデントと type='summary'", () => {
+  let dir: string;
+  let handle: DbHandle;
+  let projectId: string;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "pj-pilot-hierarchy-summary-test-"));
+    handle = createDb(`file:${join(dir, "test.db")}`);
+    await migrate(handle.db, { migrationsFolder: "./drizzle" });
+    const [project] = await handle.db.insert(projects).values({ name: "P" }).returning();
+    projectId = project!.id;
+  });
+
+  afterEach(() => {
+    try {
+      handle.client.close();
+    } finally {
+      if (existsSync(dir)) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  async function mk(title: string, sortOrder: number, parentId: string | null = null) {
+    const [t] = await handle.db
+      .insert(tasks)
+      .values({
+        projectId,
+        title,
+        parentId,
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        sortOrder,
+      })
+      .returning();
+    return t!;
+  }
+
+  it("インデントすると、新しい親が summary になる", async () => {
+    const a = await mk("A", 0);
+    const b = await mk("B", 1);
+
+    await indentTask(handle.db, SESSION, b.id);
+
+    expect((await getTaskById(handle.db, a.id))?.type).toBe("summary");
+    // インデントされた側は task のまま
+    expect((await getTaskById(handle.db, b.id))?.type).toBe("task");
+  });
+
+  it("アウトデントで最後の子が居なくなったら、元の親は task に戻る", async () => {
+    const a = await mk("A", 0);
+    const b = await mk("B", 1);
+    await indentTask(handle.db, SESSION, b.id);
+    expect((await getTaskById(handle.db, a.id))?.type).toBe("summary");
+
+    await outdentTask(handle.db, SESSION, b.id);
+
+    expect((await getTaskById(handle.db, a.id))?.type).toBe("task");
+  });
+
+  it("子が残っているうちは summary のままにする", async () => {
+    const a = await mk("A", 0);
+    const b = await mk("B", 1);
+    const c = await mk("C", 2);
+    await indentTask(handle.db, SESSION, b.id);
+    await indentTask(handle.db, SESSION, c.id);
+    expect((await getTaskById(handle.db, a.id))?.type).toBe("summary");
+
+    await outdentTask(handle.db, SESSION, b.id);
+
+    expect((await getTaskById(handle.db, a.id))?.type).toBe("summary");
+  });
+
+  it("マイルストーンは summary に書き換えない", async () => {
+    // 決定 D-12 で Phase 1 の UI には出さないが、値としては許容されている。
+    // 意図して設定された種別を階層操作の副作用で潰さない。
+    const a = await mk("A", 0);
+    await handle.db.update(tasks).set({ type: "milestone" }).where(eq(tasks.id, a.id));
+    const b = await mk("B", 1);
+
+    await indentTask(handle.db, SESSION, b.id);
+
+    expect((await getTaskById(handle.db, a.id))?.type).toBe("milestone");
+  });
+});
