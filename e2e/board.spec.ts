@@ -211,8 +211,12 @@ test.describe("絞り込み", () => {
     // 絞り込んでいない間は「絞り込み中」の表示を出さない
     await expect(page.getByTestId("board-filter-status")).toBeHidden();
 
-    // 「高」だけを選ぶ
-    await page.getByLabel("優先度").click();
+    // 「高」だけを選ぶ。
+    // ラベル起点（getByLabel / getByRole("combobox")）では安定しない。Mantine の
+    // MultiSelect は ①展開後の listbox にも aria-labelledby でラベルが紐づくため
+    // getByLabel が2要素に一致し、②選択後は内側の入力欄が data-type="hidden" になって
+    // ラッパーがクリックを横取りする。どちらも実際に踏んだので testid でラッパーを掴む。
+    await page.getByTestId("board-filter-priority").getByRole("combobox").click();
     await page.getByRole("option", { name: "高", exact: true }).click();
     await page.keyboard.press("Escape");
 
@@ -223,7 +227,7 @@ test.describe("絞り込み", () => {
     await expect(page.getByTestId("board-filter-status")).toContainText("全3件中1件");
 
     // 「緊急」も足すと OR で2件になる
-    await page.getByLabel("優先度").click();
+    await page.getByTestId("board-filter-priority").getByRole("combobox").click();
     await page.getByRole("option", { name: "緊急", exact: true }).click();
     await page.keyboard.press("Escape");
 

@@ -335,26 +335,44 @@ export function BoardClient({
           選択済みの Pill があっても placeholder を出し続け、「すべて」と選択中の値が
           並んで見えてしまうため。
         */}
-        <MultiSelect
-          label="優先度"
-          placeholder={priorityFilter.length === 0 ? "すべて" : undefined}
-          data={PRIORITY_VALUES.map((value) => ({ value, label: priorityLabel(value) }))}
-          value={priorityFilter}
-          onChange={setPriorityFilter}
-          clearable
-          w={240}
-        />
-        <MultiSelect
-          label="担当者"
-          placeholder={assigneeFilter.length === 0 ? "すべて" : undefined}
-          data={assigneeOptions}
-          value={assigneeFilter}
-          onChange={setAssigneeFilter}
-          clearable
-          searchable
-          w={240}
-          nothingFoundMessage="該当する担当者がいません"
-        />
+        {/*
+          両方の MultiSelect に `searchable` を付けて挙動を揃えている。
+          Mantine の MultiSelect は `searchable` でないと、値を選んだ時点で内側の
+          入力欄が `data-type="hidden"`（幅0）になる。するとラッパーがクリックを
+          横取りして「2つ目の値を選ぶために開き直す」操作ができなくなる
+          （実際に E2E で踏んで特定した）。優先度は4件しかなく検索の実益は薄いが、
+          担当者側と同じ操作感になり、選択後も開き直せる利点のほうが大きい。
+
+          E2E 用の `data-testid` は外側の div に付ける。Mantine は `data-testid` を
+          内側の input へ転送してしまい、`getByLabel` は展開後の listbox にも
+          aria-labelledby で紐づいて2要素に一致するため、どちらも掴み手として不安定。
+        */}
+        <div data-testid="board-filter-priority">
+          <MultiSelect
+            label="優先度"
+            placeholder={priorityFilter.length === 0 ? "すべて" : undefined}
+            data={PRIORITY_VALUES.map((value) => ({ value, label: priorityLabel(value) }))}
+            value={priorityFilter}
+            onChange={setPriorityFilter}
+            clearable
+            searchable
+            w={240}
+            nothingFoundMessage="該当する優先度がありません"
+          />
+        </div>
+        <div data-testid="board-filter-assignee">
+          <MultiSelect
+            label="担当者"
+            placeholder={assigneeFilter.length === 0 ? "すべて" : undefined}
+            data={assigneeOptions}
+            value={assigneeFilter}
+            onChange={setAssigneeFilter}
+            clearable
+            searchable
+            w={240}
+            nothingFoundMessage="該当する担当者がいません"
+          />
+        </div>
 
         {/*
           絞り込み中であることを必ず画面に出す。出していないと、条件を掛けたことを
