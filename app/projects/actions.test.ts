@@ -47,7 +47,8 @@ vi.mock("next/cache", () => ({
   revalidatePath: () => {},
 }));
 
-const { createProjectAction, updateProjectAction, deleteProjectAction } = await import("./actions");
+const { createProjectAction, updateProjectAction, deleteProjectAction, restoreProjectAction } =
+  await import("./actions");
 
 const SESSION: AuthSession = { userId: "u1" };
 /** owner ではない別ユーザー。削除が owner 限定であること（決定 D-15）の検証に使う。 */
@@ -440,6 +441,73 @@ describe("app/projects/actions", () => {
       expect(result).toEqual({ ok: false, message: "ログインが必要です" });
       const rows = await handle.db.select().from(projects);
       expect(rows.some((row) => row.name === "未ログインでは作れない")).toBe(false);
+    });
+  });
+  /** Issue #65: 削除済み PJ の復元。決定 D-15 に合わせて owner 限定。 */
+  describe("restoreProjectAction", () => {
+    it("owner なら復元でき、一覧に戻る", async () => {
+      state.session = SESSION;
+      const project = await insertProject({ name: "戻したい" });
+      // `insertProject` は project_members を作らない（素の insert）。
+      // 復元は owner 限定なので、ここで owner を明示的に登録する。
+      await handle.db
+        .insert(projectMembers)
+        .values({ projectId: project.id, userId: SESSION.userId, role: "owner" });
+      await handle.db
+        .update(projects)
+        .set({ deletedAt: new Date() })
+        .where(eq(projects.id, project.id));
+
+      const result = await restoreProjectAction(project.id);
+
+      expect(result).toEqual({ ok: true });
+      expect((await findProject(project.id))?.deletedAt).toBeNull();
+    });
+
+    it("owner でないユーザーは復元できず、削除済みのまま残る", async () => {
+      state.session = SESSION;
+      const project = await insertProject({ name: "他人のPJ" });
+      await handle.db
+        .insert(projectMembers)
+        .values({ projectId: project.id, userId: SESSION.userId, role: "owner" });
+      await handle.db
+        .update(projects)
+        .set({ deletedAt: new Date() })
+        .where(eq(projects.id, project.id));
+
+      state.session = OTHER_SESSION;
+      const result = await restoreProjectAction(project.id);
+
+      expect(result).toEqual({ ok: false, message: "この操作を行う権限がありません" });
+      expect((await findProject(project.id))?.deletedAt).not.toBeNull();
+    });
+
+    it("未ログインなら ok:false を返す", async () => {
+      state.session = null;
+
+      const result = await restoreProjectAction("some-project-id");
+
+      expect(result).toEqual({ ok: false, message: "ログインが必要です" });
+    });
+
+    it("生存中の PJ には ok:false を返す", async () => {
+      state.session = SESSION;
+      const project = await insertProject({ name: "生きている" });
+
+      const result = await restoreProjectAction(project.id);
+
+      expect(result.ok).toBe(false);
+    });
+
+    it.each([
+      ["オブジェクト", {}],
+      ["配列", ["x"]],
+      ["数値", 1],
+      ["null", null],
+    ])("projectId が %s でも throw せず ok:false を返す", async (_label, projectId) => {
+      state.session = SESSION;
+
+      await expect(restoreProjectAction(projectId)).resolves.toMatchObject({ ok: false });
     });
   });
 });

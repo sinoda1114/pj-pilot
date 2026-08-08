@@ -6,10 +6,17 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { UnauthorizedError, ForbiddenError } from "../auth/errors";
 import { createDb, type DbHandle } from "../db/client";
-import { projectMembers, projects } from "../db/schema";
+import { projectMembers, projects, tasks } from "../db/schema";
 import { insertTestUsers } from "../db/testHelpers";
 import { NotFoundError } from "../errors";
-import { createProject, deleteProject, listProjects, updateProject } from "./service";
+import {
+  createProject,
+  deleteProject,
+  listDeletedProjects,
+  listProjects,
+  restoreProject,
+  updateProject,
+} from "./service";
 
 const OWNER = { userId: "owner-1" };
 const OTHER_MEMBER = { userId: "other-1" };
@@ -237,6 +244,113 @@ describe("projects/service", () => {
       await expect(deleteProject(handle.db, OWNER, "nonexistent-project")).rejects.toThrow(
         NotFoundError,
       );
+    });
+  });
+  /**
+   * Issue #65: 論理削除した PJ を戻す手段が無く、30日後に配下タスクごと物理削除されていた。
+   */
+  describe("listDeletedProjects / restoreProject", () => {
+    it("削除済みの PJ だけを一覧に返し、生存中の PJ は返さない", async () => {
+      const alive = await createProject(handle.db, OWNER, { name: "生存中" });
+      const deleted = await createProject(handle.db, OWNER, { name: "削除済み" });
+      await deleteProject(handle.db, OWNER, deleted.id);
+
+      const trash = await listDeletedProjects(handle.db, OWNER);
+
+      expect(trash.map((p) => p.id)).toEqual([deleted.id]);
+      expect((await listProjects(handle.db, OWNER)).map((p) => p.id)).toEqual([alive.id]);
+    });
+
+    it("一覧は owner でなくても見える（決定 D-08。誤削除に気づけるようにするため）", async () => {
+      const project = await createProject(handle.db, OWNER, { name: "P" });
+      await deleteProject(handle.db, OWNER, project.id);
+
+      const trash = await listDeletedProjects(handle.db, OTHER_MEMBER);
+
+      expect(trash.map((p) => p.id)).toEqual([project.id]);
+    });
+
+    it("一覧は未ログインなら UnauthorizedError を投げる", async () => {
+      await expect(listDeletedProjects(handle.db, null)).rejects.toThrow(UnauthorizedError);
+    });
+
+    it("owner は復元でき、一覧に戻る", async () => {
+      const project = await createProject(handle.db, OWNER, { name: "戻したい" });
+      await deleteProject(handle.db, OWNER, project.id);
+
+      await restoreProject(handle.db, OWNER, project.id);
+
+      expect((await listProjects(handle.db, OWNER)).map((p) => p.id)).toEqual([project.id]);
+      expect(await listDeletedProjects(handle.db, OWNER)).toEqual([]);
+    });
+
+    it("決定 D-15: owner でないメンバーは復元できない", async () => {
+      const project = await createProject(handle.db, OWNER, { name: "P" });
+      await deleteProject(handle.db, OWNER, project.id);
+
+      await expect(restoreProject(handle.db, OTHER_MEMBER, project.id)).rejects.toThrow(
+        ForbiddenError,
+      );
+
+      // 拒否されたら DB は変わっていないこと（トランザクションが巻き戻ること）。
+      expect((await listDeletedProjects(handle.db, OWNER)).map((p) => p.id)).toEqual([project.id]);
+    });
+
+    it("未ログインなら UnauthorizedError を投げる", async () => {
+      const project = await createProject(handle.db, OWNER, { name: "P" });
+      await deleteProject(handle.db, OWNER, project.id);
+
+      await expect(restoreProject(handle.db, null, project.id)).rejects.toThrow(UnauthorizedError);
+    });
+
+    it("生存中の PJ を復元しようとすると NotFoundError を投げる", async () => {
+      const project = await createProject(handle.db, OWNER, { name: "生きている" });
+
+      await expect(restoreProject(handle.db, OWNER, project.id)).rejects.toThrow(NotFoundError);
+    });
+
+    it("存在しない PJ は NotFoundError を投げる", async () => {
+      await expect(restoreProject(handle.db, OWNER, "nonexistent-project")).rejects.toThrow(
+        NotFoundError,
+      );
+    });
+
+    /**
+     * PJ の削除は配下タスクの `deleted_at` を立てない（§4.4）。したがって PJ を戻せば
+     * 配下タスクもそのまま戻り、PJ 削除とは別に個別削除されたタスクは削除済みのまま残る。
+     */
+    it("復元しても配下タスクの削除状態は変えない", async () => {
+      const project = await createProject(handle.db, OWNER, { name: "P" });
+      const [alive] = await handle.db
+        .insert(tasks)
+        .values({
+          projectId: project.id,
+          title: "生存タスク",
+          startDate: "2026-08-01",
+          endDate: "2026-08-05",
+        })
+        .returning();
+      const [individuallyDeleted] = await handle.db
+        .insert(tasks)
+        .values({
+          projectId: project.id,
+          title: "個別に削除したタスク",
+          startDate: "2026-08-01",
+          endDate: "2026-08-05",
+          deletedAt: new Date(),
+        })
+        .returning();
+
+      await deleteProject(handle.db, OWNER, project.id);
+      await restoreProject(handle.db, OWNER, project.id);
+
+      const [aliveAfter] = await handle.db.select().from(tasks).where(eq(tasks.id, alive!.id));
+      const [deletedAfter] = await handle.db
+        .select()
+        .from(tasks)
+        .where(eq(tasks.id, individuallyDeleted!.id));
+      expect(aliveAfter?.deletedAt).toBeNull();
+      expect(deletedAfter?.deletedAt).not.toBeNull();
     });
   });
 });

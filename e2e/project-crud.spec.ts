@@ -56,4 +56,16 @@ test("プロジェクトの作成・編集・削除が一気通貫で行える",
 
   await expect(page.getByText("削除しました", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: renamedName })).toHaveCount(0);
+
+  // --- 復元（Issue #65）---
+  // 削除は論理削除（30日保持）なので、一覧の「削除済みプロジェクト」から戻せる。
+  // 以前はここに戻す手段が無く、誤削除すると30日後に配下タスクごと消えていた。
+  await expect(page.getByRole("heading", { name: "削除済みプロジェクト" })).toBeVisible();
+  await expect(page.getByText(renamedName, { exact: true })).toBeVisible();
+
+  await page.getByTestId(`restore-project-${projectId}`).click();
+
+  await expect(page.getByText("復元しました", { exact: true })).toBeVisible();
+  // リンクとして（＝生存中の一覧に）戻っていること。
+  await expect(page.getByRole("link", { name: renamedName })).toBeVisible();
 });

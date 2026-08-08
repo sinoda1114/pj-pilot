@@ -28,7 +28,8 @@ export function DeleteProjectButton({
       title: "プロジェクトを削除しますか？",
       children: (
         <Text size="sm">
-          「{projectName}」を削除します。この操作は元に戻せません。
+          「{projectName}」を削除します。一覧の「削除済みプロジェクト」から30日以内なら
+          復元できますが、それを過ぎると配下のタスクごと完全に削除されます。
         </Text>
       ),
       labels: { confirm: "削除する", cancel: "キャンセル" },

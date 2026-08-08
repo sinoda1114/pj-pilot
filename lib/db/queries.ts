@@ -6,7 +6,7 @@
  */
 
 import type { ResultSet } from "@libsql/client";
-import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, isNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { projects, taskDependencies, tasks } from "./schema";
@@ -22,6 +22,22 @@ export type Db = BaseSQLiteDatabase<"async", ResultSet, typeof schema>;
 
 export async function listActiveProjects(db: Db) {
   return db.select().from(projects).where(isNull(projects.deletedAt));
+}
+
+/**
+ * ゴミ箱用（Issue #65）。論理削除済み（`deleted_at IS NOT NULL`）のプロジェクトだけを、
+ * 削除が新しい順に返す。生存のみを返す `listActiveProjects` とは逆に、ここでは意図的に
+ * 削除済みだけを絞り込む（タスク側の `listDeletedTasksByProject` と同じ考え方）。
+ *
+ * 30日で物理削除される（決定 D-05）ため、復元できる期間は限られる。並び順を削除の
+ * 新しい順にしているのは、直前の誤削除がいちばん上に来るようにするため。
+ */
+export async function listDeletedProjects(db: Db) {
+  return db
+    .select()
+    .from(projects)
+    .where(isNotNull(projects.deletedAt))
+    .orderBy(desc(projects.deletedAt), asc(projects.name));
 }
 
 export async function getActiveProject(db: Db, projectId: string) {
