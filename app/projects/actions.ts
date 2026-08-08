@@ -11,6 +11,8 @@
  */
 
 import { revalidatePath } from "next/cache";
+import { ActionInputError, assertValidId, assertValidText } from "../../lib/actions/input";
+import { requireLogin } from "../../lib/auth/authz";
 import { ForbiddenError, UnauthorizedError } from "../../lib/auth/errors";
 import { getSession } from "../../lib/auth/session";
 import { db } from "../../lib/db";
@@ -33,7 +35,8 @@ function toActionResult(error: unknown): ActionResult {
     error instanceof UnauthorizedError ||
     error instanceof ForbiddenError ||
     error instanceof NotFoundError ||
-    error instanceof ValidationError
+    error instanceof ValidationError ||
+    error instanceof ActionInputError
   ) {
     return { ok: false, message: error.message };
   }
@@ -46,23 +49,59 @@ export interface CreateProjectActionInput {
   description?: string;
 }
 
-export async function createProjectAction(input: CreateProjectActionInput): Promise<ActionResult> {
-  const name = input.name.trim();
-  if (!name) {
-    return { ok: false, message: "プロジェクト名を入力してください" };
+/**
+ * 入力をランタイム検証して正規化する。
+ *
+ * 以前はこのファイルだけ `input` を型注釈のまま信頼し、`input.name.trim()` を
+ * `getSession()` **より前**・`try` の外で呼んでいた。そのため未ログインの相手でも
+ * `{"name": 1}` や `null` を POST するだけで未捕捉の `TypeError` を起こせ、
+ * `{ok:false}` にすらならず 500 になることを監査で実測した。
+ * 同ファイルの `dependencySyncEnabled` だけは「Server Action は公開エンドポイント」
+ * という理由でランタイム検証済みだったので、その方針を全項目に揃える。
+ */
+function normalizeProjectInput(input: unknown): { name?: string; description?: string | null } {
+  if (typeof input !== "object" || input === null) {
+    throw new ActionInputError("不正な入力です");
   }
-  if (name.length > NAME_MAX_LENGTH) {
-    return { ok: false, message: `プロジェクト名は${NAME_MAX_LENGTH}文字以内で入力してください` };
+  const value = input as Record<string, unknown>;
+  const normalized: { name?: string; description?: string | null } = {};
+
+  if (value.name !== undefined) {
+    normalized.name = assertValidText(value.name, {
+      label: "プロジェクト名",
+      maxLength: NAME_MAX_LENGTH,
+      required: true,
+    });
   }
 
-  const description = input.description?.trim();
-  if (description && description.length > DESCRIPTION_MAX_LENGTH) {
-    return { ok: false, message: `説明は${DESCRIPTION_MAX_LENGTH}文字以内で入力してください` };
+  if (value.description !== undefined) {
+    normalized.description =
+      value.description === null
+        ? null
+        : assertValidText(value.description, {
+            label: "説明",
+            maxLength: DESCRIPTION_MAX_LENGTH,
+            required: false,
+          }) || null;
   }
 
+  return normalized;
+}
+
+export async function createProjectAction(input: unknown): Promise<ActionResult> {
   try {
+    // 認可を最初に通す。検証や DB 照会が先だと、未ログインでも例外の形や
+    // メッセージの違いから内部の状態を推測できてしまう
+    // （`app/projects/[id]/tasks/actions.ts` の `updateTaskAction` と同じ方針）。
     const session = await getSession();
-    await createProject(db, session, { name, description: description || undefined });
+    requireLogin(session);
+
+    const { name, description } = normalizeProjectInput(input);
+    if (name === undefined) {
+      throw new ActionInputError("プロジェクト名を入力してください");
+    }
+
+    await createProject(db, session, { name, description: description ?? undefined });
   } catch (error) {
     return toActionResult(error);
   }
@@ -78,58 +117,56 @@ export interface UpdateProjectActionInput {
 }
 
 export async function updateProjectAction(
-  projectId: string,
-  input: UpdateProjectActionInput,
+  projectId: unknown,
+  input: unknown,
 ): Promise<ActionResult> {
-  const updates: UpdateProjectInput = {};
-
-  if (input.name !== undefined) {
-    const name = input.name.trim();
-    if (!name) {
-      return { ok: false, message: "プロジェクト名を入力してください" };
-    }
-    if (name.length > NAME_MAX_LENGTH) {
-      return { ok: false, message: `プロジェクト名は${NAME_MAX_LENGTH}文字以内で入力してください` };
-    }
-    updates.name = name;
-  }
-
-  if (input.description !== undefined) {
-    const description = input.description === null ? null : input.description.trim();
-    if (description && description.length > DESCRIPTION_MAX_LENGTH) {
-      return { ok: false, message: `説明は${DESCRIPTION_MAX_LENGTH}文字以内で入力してください` };
-    }
-    updates.description = description || null;
-  }
-
-  if (input.dependencySyncEnabled !== undefined) {
-    // Server Action は直接呼び出し可能な公開エンドポイントでもあるため、
-    // TypeScript の型注釈（コンパイル時のみ）を信頼せず、ここでランタイム検証する
-    // （`app/projects/[id]/tasks/actions.ts` の `isPinned` 検証と同じ方針。
-    // セキュリティレビュー指摘）。
-    if (typeof input.dependencySyncEnabled !== "boolean") {
-      return { ok: false, message: "依存連動の指定が不正です" };
-    }
-    updates.dependencySyncEnabled = input.dependencySyncEnabled;
-  }
-
+  let validProjectId: string;
   try {
     const session = await getSession();
-    await updateProject(db, session, projectId, updates);
+    requireLogin(session);
+
+    validProjectId = assertValidId(projectId, "projectId");
+
+    const updates: UpdateProjectInput = {};
+    const { name, description } = normalizeProjectInput(input);
+    if (name !== undefined) {
+      updates.name = name;
+    }
+    if (description !== undefined) {
+      updates.description = description;
+    }
+
+    const value = input as Record<string, unknown>;
+    if (value.dependencySyncEnabled !== undefined) {
+      // Server Action は直接呼び出し可能な公開エンドポイントでもあるため、
+      // TypeScript の型注釈（コンパイル時のみ）を信頼せず、ここでランタイム検証する
+      // （`app/projects/[id]/tasks/actions.ts` の `isPinned` 検証と同じ方針。
+      // セキュリティレビュー指摘）。
+      if (typeof value.dependencySyncEnabled !== "boolean") {
+        throw new ActionInputError("依存連動の指定が不正です");
+      }
+      updates.dependencySyncEnabled = value.dependencySyncEnabled;
+    }
+
+    await updateProject(db, session, validProjectId, updates);
   } catch (error) {
     return toActionResult(error);
   }
 
   revalidatePath("/projects");
   // タスク/Gantt/ゴミ箱/設定の各タブが共有するレイアウト（ヘッダーのPJ名）もまとめて再検証する。
-  revalidatePath(`/projects/${projectId}`, "layout");
+  revalidatePath(`/projects/${validProjectId}`, "layout");
   return { ok: true };
 }
 
-export async function deleteProjectAction(projectId: string): Promise<ActionResult> {
+export async function deleteProjectAction(projectId: unknown): Promise<ActionResult> {
+  let validProjectId: string;
   try {
     const session = await getSession();
-    await deleteProject(db, session, projectId);
+    requireLogin(session);
+
+    validProjectId = assertValidId(projectId, "projectId");
+    await deleteProject(db, session, validProjectId);
   } catch (error) {
     return toActionResult(error);
   }
@@ -137,6 +174,6 @@ export async function deleteProjectAction(projectId: string): Promise<ActionResu
   revalidatePath("/projects");
   // 削除後にキャッシュされたレイアウト（ヘッダーのPJ名等）が残らないようにする
   // （updateProjectActionと同様。Bugbot指摘）。
-  revalidatePath(`/projects/${projectId}`, "layout");
+  revalidatePath(`/projects/${validProjectId}`, "layout");
   return { ok: true };
 }

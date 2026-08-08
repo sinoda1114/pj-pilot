@@ -14,6 +14,8 @@
  */
 
 import { revalidatePath } from "next/cache";
+import { ActionInputError, assertValidId } from "../../../../lib/actions/input";
+import { requireLogin } from "../../../../lib/auth/authz";
 import { ForbiddenError, UnauthorizedError } from "../../../../lib/auth/errors";
 import { getSession } from "../../../../lib/auth/session";
 import { isBoardStatus, moveTaskOnBoard } from "../../../../lib/board/service";
@@ -21,14 +23,6 @@ import { db } from "../../../../lib/db";
 import { NotFoundError, ValidationError } from "../../../../lib/errors";
 
 export type ActionResult = { ok: true } | { ok: false; message: string };
-
-/** ランタイム検証に失敗したときのエラー。ドメインエラーとして扱う。 */
-class ActionInputError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ActionInputError";
-  }
-}
 
 function isDomainError(error: unknown): error is Error {
   return (
@@ -55,17 +49,19 @@ function toFailure(error: unknown): ActionResult {
  * タスクIDを送り込まれても動かせないようにするため）。ここでは形の検証だけを行う。
  */
 export async function moveTaskOnBoardAction(
-  projectId: string,
-  taskId: unknown,
+  rawProjectId: unknown,
+  rawTaskId: unknown,
   toStatus: unknown,
   toIndex: unknown,
 ): Promise<ActionResult> {
   const session = await getSession();
 
   try {
-    if (typeof taskId !== "string" || taskId.trim().length === 0) {
-      throw new ActionInputError("タスクの指定が不正です");
-    }
+    requireLogin(session);
+    // `projectId` も検証する。以前はここだけ型注釈のまま素通ししており、
+    // オブジェクトを渡すと libSQL 層まで到達して未捕捉例外（500）になった（監査で実測）。
+    const projectId = assertValidId(rawProjectId, "projectId");
+    const taskId = assertValidId(rawTaskId, "taskId");
     if (!isBoardStatus(toStatus)) {
       throw new ActionInputError("ステータスの値が不正です");
     }

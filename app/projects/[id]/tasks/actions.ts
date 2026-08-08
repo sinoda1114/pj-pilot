@@ -13,6 +13,11 @@
  */
 
 import { revalidatePath } from "next/cache";
+import {
+  ActionInputError,
+  assertValidId,
+  assertValidText,
+} from "../../../../lib/actions/input";
 import { requireLogin } from "../../../../lib/auth/authz";
 import { ForbiddenError, UnauthorizedError } from "../../../../lib/auth/errors";
 import { getSession } from "../../../../lib/auth/session";
@@ -54,14 +59,14 @@ const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_TITLE_LENGTH = 200;
 const MAX_ASSIGNEES = 50;
 const MAX_USER_ID_LENGTH = 100;
-
-/** ランタイム検証に失敗したときのエラー。ドメインエラー（`ActionResult.ok=false`）として扱う。 */
-class ActionInputError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ActionInputError";
-  }
-}
+/**
+ * 工数の上限。`Number.isFinite` だけでは `1e308` が通ってしまい、サマリー集計
+ * （`lib/scheduling/propagate.ts` の `aggregateSummaryValues`）で子2件を足すと
+ * `Infinity`、加重平均が `Infinity / Infinity = NaN` になる。その値を書こうとして
+ * libSQL が例外を投げ、**以後そのサマリー配下は Gantt から一切動かせなくなる**
+ * （監査で実測）。業務上あり得ない桁はここで止める。
+ */
+const MAX_HOURS = 100_000;
 
 export interface TaskFormInput {
   title: string;
@@ -87,12 +92,15 @@ function assertValidTaskFormInput(input: unknown): asserts input is TaskFormInpu
   }
   const value = input as Record<string, unknown>;
 
-  if (typeof value.title !== "string" || value.title.trim().length === 0) {
-    throw new ActionInputError("タイトルは必須です");
-  }
-  if (value.title.length > MAX_TITLE_LENGTH) {
-    throw new ActionInputError(`タイトルは${MAX_TITLE_LENGTH}文字以内で入力してください`);
-  }
+  // 制御文字（特に NUL）も弾く。`trim()` は NUL を空白として扱わないため
+  // `title = "\u0000"` が「必須」を通過してしまうが、libSQL は C 文字列として扱うので
+  // 保存時に切り捨てられて DB には空文字列が入る（監査で実測）。
+  assertValidText(value.title, {
+    label: "タイトル",
+    maxLength: MAX_TITLE_LENGTH,
+    required: true,
+    requiredMessage: "タイトルは必須です",
+  });
   if (typeof value.startDate !== "string" || !DATE_ONLY_PATTERN.test(value.startDate)) {
     throw new ActionInputError("開始日の形式が不正です");
   }
@@ -125,9 +133,9 @@ function assertValidTaskFormInput(input: unknown): asserts input is TaskFormInpu
     if (
       hours !== undefined &&
       hours !== null &&
-      (typeof hours !== "number" || !Number.isFinite(hours) || hours < 0)
+      (typeof hours !== "number" || !Number.isFinite(hours) || hours < 0 || hours > MAX_HOURS)
     ) {
-      throw new ActionInputError("工数は0以上の数値で入力してください");
+      throw new ActionInputError(`工数は0〜${MAX_HOURS}の数値で入力してください`);
     }
   }
   if (value.isPinned !== undefined && typeof value.isPinned !== "boolean") {
@@ -177,13 +185,15 @@ function toFailure(error: unknown): ActionResult {
 }
 
 export async function createTaskAction(
-  projectId: string,
+  rawProjectId: unknown,
   input: unknown,
   assigneeUserIds: unknown,
 ): Promise<ActionResult & { taskId?: string }> {
   const session = await getSession();
 
   try {
+    requireLogin(session);
+    const projectId = assertValidId(rawProjectId, "projectId");
     assertValidTaskFormInput(input);
     const userIds = assertValidUserIds(assigneeUserIds);
 
@@ -211,8 +221,8 @@ export async function createTaskAction(
 }
 
 export async function updateTaskAction(
-  projectId: string,
-  taskId: string,
+  rawProjectId: unknown,
+  rawTaskId: unknown,
   input: unknown,
   assigneeUserIds: unknown,
 ): Promise<ActionResult> {
@@ -223,6 +233,8 @@ export async function updateTaskAction(
     // 返るメッセージの違い（「ログインが必要です」/「タスクが見つかりません」）から
     // taskId の所属を判別できてしまう（/code-review の指摘）。
     requireLogin(session);
+    const projectId = assertValidId(rawProjectId, "projectId");
+    const taskId = assertValidId(rawTaskId, "taskId");
     assertValidTaskFormInput(input);
     const userIds = assertValidUserIds(assigneeUserIds);
     await assertTaskInProject(projectId, taskId);
@@ -258,14 +270,16 @@ export async function updateTaskAction(
  * `"subtree"` / `"promote"` のどちらかを選ばせてから再度呼び出す（決定 D-02）。
  */
 export async function deleteTaskAction(
-  projectId: string,
-  taskId: string,
+  rawProjectId: unknown,
+  rawTaskId: unknown,
   mode?: "subtree" | "promote",
 ): Promise<ActionResult> {
   const session = await getSession();
 
   try {
     requireLogin(session);
+    const projectId = assertValidId(rawProjectId, "projectId");
+    const taskId = assertValidId(rawTaskId, "taskId");
     await assertTaskInProject(projectId, taskId);
 
     if (mode === "subtree") {
@@ -284,14 +298,16 @@ export async function deleteTaskAction(
 }
 
 export async function setTaskAssigneesAction(
-  projectId: string,
-  taskId: string,
+  rawProjectId: unknown,
+  rawTaskId: unknown,
   userIds: unknown,
 ): Promise<ActionResult> {
   const session = await getSession();
 
   try {
     requireLogin(session);
+    const projectId = assertValidId(rawProjectId, "projectId");
+    const taskId = assertValidId(rawTaskId, "taskId");
     const validated = assertValidUserIds(userIds);
     await assertTaskInProject(projectId, taskId);
     await setTaskAssignees(db, session, taskId, validated);

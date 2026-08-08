@@ -7,6 +7,10 @@
  */
 
 import { revalidatePath } from "next/cache";
+import {
+  ActionInputError,
+  assertValidId,
+} from "../../../../lib/actions/input";
 import { isValidDateOnly } from "../../../../lib/dates/date-only";
 import { requireLogin } from "../../../../lib/auth/authz";
 import { ForbiddenError, UnauthorizedError } from "../../../../lib/auth/errors";
@@ -36,7 +40,8 @@ function toActionError(error: unknown): { ok: false; message: string } | never {
     error instanceof UnauthorizedError ||
     error instanceof ForbiddenError ||
     error instanceof NotFoundError ||
-    error instanceof ValidationError
+    error instanceof ValidationError ||
+    error instanceof ActionInputError
   ) {
     return { ok: false, message: error.message };
   }
@@ -46,9 +51,21 @@ function toActionError(error: unknown): { ok: false; message: string } | never {
 /** 100年分。通常のドラッグ操作ではまず到達しない、妥当な範囲の上限。 */
 const MAX_DELTA_DAYS = 36500;
 
+/**
+ * 1回の Undo で受け付ける変更件数の上限。
+ *
+ * 正規の payload は「直前1回の伝播結果」なので、1プロジェクトのタスク数を超えることは
+ * ない。上限が無いと、同じ id を並べた配列を1回 POST するだけで「要素数 × 2 本」の SQL
+ * （`persistPropagateResult` の UPDATE と、要素ごとに別トランザクションで走る
+ * `recomputeAndPersistAncestorSummaries`）が発行できてしまう。Server Action の本文は
+ * 既定 1MB まで載るため、監査では 961KB の1リクエストで **42 秒・約24,000本の SQL** が
+ * 走ることを実測した。本番は Vercel の関数時間と Turso の行課金に直撃する。
+ */
+const MAX_UNDO_CHANGES = 500;
+
 async function runPropagation(
-  projectId: string,
-  taskId: string,
+  rawProjectId: unknown,
+  rawTaskId: unknown,
   deltaDays: number,
   bypassSync: boolean,
   kind: "move" | "resize",
@@ -57,12 +74,21 @@ async function runPropagation(
     requireLogin(await getSession());
 
     // Server Action は直接呼び出し可能な公開エンドポイントでもあるため、
-    // ブラウザのGantt操作という前提を信頼せず、`deltaDays` がここで壊れて
-    // いないか検証する。`NaN`/`Infinity`/極端な値をそのまま
-    // `addDaysToDateOnly` に渡すと、DBに不正な日付文字列
-    // （`NaN-NaN-NaN`等）が書き込まれてしまう。
+    // ブラウザのGantt操作という前提を信頼せず、引数がここで壊れていないか検証する。
+    // ID を型注釈のまま drizzle に渡すと、オブジェクトを投げられただけで
+    // libSQL 層まで到達して未捕捉例外（500）になる（監査で実測）。
+    const projectId = assertValidId(rawProjectId, "projectId");
+    const taskId = assertValidId(rawTaskId, "taskId");
+
+    // `deltaDays` の検証。`NaN`/`Infinity`/極端な値をそのまま `addDaysToDateOnly` に
+    // 渡すと、DBに不正な日付文字列（`NaN-NaN-NaN`等）が書き込まれてしまう。
     if (!Number.isInteger(deltaDays) || Math.abs(deltaDays) > MAX_DELTA_DAYS) {
       throw new ValidationError("移動量が不正です");
+    }
+    // 決定 D-08（Shift ドラッグで連動を切る）の判断に使う値。truthy 判定で通すと
+    // 文字列 `"yes"` でも連動をバイパスできてしまう（`isPinned` と同じ方針で検証）。
+    if (typeof bypassSync !== "boolean") {
+      throw new ValidationError("連動指定が不正です");
     }
 
     const project = await getActiveProject(db, projectId);
@@ -138,8 +164,8 @@ async function runPropagation(
 
 /** タスクバーの移動確定（決定D-01: ΔはSVARが返す整数の日数をそのまま使う）。 */
 export async function moveTaskAction(
-  projectId: string,
-  taskId: string,
+  projectId: unknown,
+  taskId: unknown,
   deltaDays: number,
   bypassSync: boolean,
 ): Promise<PropagateActionResult> {
@@ -148,8 +174,8 @@ export async function moveTaskAction(
 
 /** タスクバーのリサイズ確定（終了日のみΔシフト、決定D-01）。 */
 export async function resizeTaskEndAction(
-  projectId: string,
-  taskId: string,
+  projectId: unknown,
+  taskId: unknown,
   deltaDays: number,
   bypassSync: boolean,
 ): Promise<PropagateActionResult> {
@@ -163,11 +189,39 @@ export async function resizeTaskEndAction(
  * 日付を戻した後、影響を受けたタスクの祖先サマリーを再計算する。
  */
 export async function undoDateChangesAction(
-  projectId: string,
-  changes: { id: string; startDate: string; endDate: string }[],
+  rawProjectId: unknown,
+  changes: unknown,
 ): Promise<ActionResult> {
   try {
     requireLogin(await getSession());
+
+    const projectId = assertValidId(rawProjectId, "projectId");
+
+    // payload の形をここで固める。以前は配列かどうかも要素の型も見ておらず、
+    // 同じ id を並べた巨大な配列を1回 POST するだけで大量の SQL を発行できた
+    // （`MAX_UNDO_CHANGES` のコメント参照）。
+    if (!Array.isArray(changes)) {
+      throw new ActionInputError("元に戻す内容が不正です");
+    }
+    if (changes.length > MAX_UNDO_CHANGES) {
+      throw new ActionInputError("元に戻す内容が多すぎます");
+    }
+    // 同じ id が並んでいても書き戻す結果は変わらないため、ここで一意化して
+    // 「要素数ぶんの UPDATE + 祖先再集計」が増幅しないようにする。
+    // 重複があれば最後の1件を採用する（正規の payload に重複は現れない）。
+    const normalized = new Map<string, { id: string; startDate: string; endDate: string }>();
+    for (const entry of changes) {
+      if (typeof entry !== "object" || entry === null) {
+        throw new ActionInputError("元に戻す内容が不正です");
+      }
+      const value = entry as Record<string, unknown>;
+      const id = assertValidId(value.id, "changes[].id");
+      if (typeof value.startDate !== "string" || typeof value.endDate !== "string") {
+        throw new ActionInputError("元に戻す内容が不正です");
+      }
+      normalized.set(id, { id, startDate: value.startDate, endDate: value.endDate });
+    }
+    const uniqueChanges = [...normalized.values()];
 
     const project = await getActiveProject(db, projectId);
     if (!project) {
@@ -190,7 +244,7 @@ export async function undoDateChangesAction(
     // 旧バグ由来の逆転した日付を持っていた場合に payload 全体が弾かれ、「削除済みは
     // 除外して残りは戻す」という意図が働かない（Cursor Bugbot の指摘。実測で確認）。
     const deletedIds = new Set(dbTasks.filter((t) => t.deletedAt !== null).map((t) => t.id));
-    const applicable = changes.filter((c) => !deletedIds.has(c.id));
+    const applicable = uniqueChanges.filter((c) => !deletedIds.has(c.id));
 
     // 残った分を検証する。他プロジェクトの ID・壊れた日付・逆転した日付が1つでもあれば
     // 全体を拒否する（正規の Undo payload には現れない＝改竄とみなす）。
@@ -238,12 +292,18 @@ export type CreateDependencyActionResult =
 
 /** Gantt上での依存作成（FS固定、決定は`lib/dependencies/service.ts`側で検証済み）。 */
 export async function createDependencyAction(
-  projectId: string,
-  predecessorId: string,
-  successorId: string,
+  rawProjectId: unknown,
+  rawPredecessorId: unknown,
+  rawSuccessorId: unknown,
 ): Promise<CreateDependencyActionResult> {
   try {
     const session = await getSession();
+    requireLogin(session);
+
+    const projectId = assertValidId(rawProjectId, "projectId");
+    const predecessorId = assertValidId(rawPredecessorId, "predecessorId");
+    const successorId = assertValidId(rawSuccessorId, "successorId");
+
     const dependency = await createDependency(db, session, projectId, predecessorId, successorId);
     revalidatePath(`/projects/${projectId}/gantt`);
     return { ok: true, dependencyId: dependency.id };
@@ -253,11 +313,29 @@ export async function createDependencyAction(
 }
 
 export async function deleteDependencyAction(
-  projectId: string,
-  dependencyId: string,
+  rawProjectId: unknown,
+  rawDependencyId: unknown,
 ): Promise<ActionResult> {
   try {
     const session = await getSession();
+    // 認可を最初に通す。DB 照会が先だと、未ログインの相手にも「存在する依存 ID なら
+    // 『ログインが必要です』、存在しない ID なら『依存が見つかりません』」と別の
+    // メッセージが返り、ID の存在オラクルになる（監査で実測）。同ファイルの
+    // `undoDateChangesAction` や tasks の `updateTaskAction` と方針を揃える。
+    requireLogin(session);
+
+    const projectId = assertValidId(rawProjectId, "projectId");
+    const dependencyId = assertValidId(rawDependencyId, "dependencyId");
+
+    // PJ の生存も確認する。ここだけ `getActiveProject` を通していなかったため、
+    // owner が論理削除した PJ（決定 D-05 で 30 日保持）に対してもログイン済みなら
+    // 誰でも成功し、依存レコードを**物理削除**できた（監査で実測）。
+    // `task_dependencies` に論理削除は無い（決定 D-06）ので不可逆になる。
+    // 他の全アクションと条件を揃える。
+    const project = await getActiveProject(db, projectId);
+    if (!project) {
+      throw new NotFoundError("プロジェクトが見つかりません");
+    }
 
     // `dependencyId` が本当にこの `projectId` に属するかを検証してから削除する。
     // `lib/dependencies/service.ts` の `deleteDependency` は `dependencyId` だけで

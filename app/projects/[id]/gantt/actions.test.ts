@@ -499,4 +499,105 @@ describe("app/projects/[id]/gantt/actions", () => {
       expect(stillExists).toHaveLength(1);
     });
   });
+  /** 公開前セキュリティ監査の指摘に対する回帰テスト。 */
+  describe("ランタイム入力検証（Server Action は公開エンドポイント）", () => {
+    it("undo の changes が上限を超えると拒否し、DB を書き換えない", async () => {
+      state.session = SESSION;
+      const { a } = await setupProjectWithChain();
+      const before = await handle.db.select().from(tasks).where(eq(tasks.id, a.id));
+
+      // 上限は 500。同じ id を並べた巨大な配列を1回 POST するだけで
+      // 「要素数 × 2 本」の SQL を発行できてしまうため、件数で止める。
+      const payload = Array.from({ length: 501 }, () => ({
+        id: a.id,
+        startDate: "2026-01-01",
+        endDate: "2026-01-02",
+      }));
+
+      const result = await undoDateChangesAction(projectId, payload);
+
+      expect(result).toEqual({ ok: false, message: "元に戻す内容が多すぎます" });
+      const after = await handle.db.select().from(tasks).where(eq(tasks.id, a.id));
+      expect(after[0]?.startDate).toBe(before[0]?.startDate);
+    });
+
+    it("undo の changes に同じ id が並んでいても、上限内なら一意化して適用する", async () => {
+      state.session = SESSION;
+      const { a } = await setupProjectWithChain();
+
+      const payload = Array.from({ length: 100 }, () => ({
+        id: a.id,
+        startDate: "2026-01-01",
+        endDate: "2026-01-02",
+      }));
+
+      const result = await undoDateChangesAction(projectId, payload);
+
+      expect(result).toEqual({ ok: true });
+      const [updated] = await handle.db.select().from(tasks).where(eq(tasks.id, a.id));
+      expect(updated).toMatchObject({ startDate: "2026-01-01", endDate: "2026-01-02" });
+    });
+
+    it.each([
+      ["配列でない", "not-an-array"],
+      ["要素が null", [null]],
+      ["要素の id が非文字列", [{ id: {}, startDate: "2026-01-01", endDate: "2026-01-02" }]],
+      ["要素の日付が非文字列", [{ id: "x", startDate: 1, endDate: 2 }]],
+    ])("undo の changes が %s なら throw せず ok:false を返す", async (_label, payload) => {
+      state.session = SESSION;
+      await setupProjectWithChain();
+
+      await expect(undoDateChangesAction(projectId, payload)).resolves.toMatchObject({
+        ok: false,
+      });
+    });
+
+    it("bypassSync が真偽値でなければ拒否する（truthy な文字列で連動を切らせない）", async () => {
+      state.session = SESSION;
+      const { a, b } = await setupProjectWithChain();
+
+      const result = await moveTaskAction(projectId, a.id, 3, "yes" as unknown as boolean);
+
+      expect(result).toEqual({ ok: false, message: "連動指定が不正です" });
+      const [unchangedB] = await handle.db.select().from(tasks).where(eq(tasks.id, b.id));
+      expect(unchangedB).toMatchObject({ startDate: "2026-08-04" });
+    });
+
+    it.each([
+      ["オブジェクト", {}],
+      ["配列", ["x"]],
+      ["数値", 1],
+    ])("taskId が %s でも throw せず ok:false を返す", async (_label, taskId) => {
+      state.session = SESSION;
+      await setupProjectWithChain();
+
+      await expect(moveTaskAction(projectId, taskId, 1, false)).resolves.toMatchObject({
+        ok: false,
+      });
+      await expect(resizeTaskEndAction(projectId, taskId, 1, false)).resolves.toMatchObject({
+        ok: false,
+      });
+    });
+
+    /**
+     * 以前は `deleteDependencyAction` だけ `requireLogin` より前に DB を引いており、
+     * 未ログインでも「存在する ID なら『ログインが必要です』／存在しない ID なら
+     * 『依存が見つかりません』」と返り分けて ID の存在オラクルになっていた。
+     */
+    it("未ログインなら、存在する依存でも存在しない依存でも同じメッセージを返す", async () => {
+      const { a, b } = await setupProjectWithChain();
+      const [dependency] = await handle.db
+        .select()
+        .from(taskDependencies)
+        .where(eq(taskDependencies.predecessorId, a.id));
+      expect(dependency?.successorId).toBe(b.id);
+
+      state.session = null;
+      const existing = await deleteDependencyAction(projectId, dependency!.id);
+      const missing = await deleteDependencyAction(projectId, "does-not-exist");
+
+      expect(existing).toEqual({ ok: false, message: "ログインが必要です" });
+      expect(missing).toEqual(existing);
+    });
+  });
 });

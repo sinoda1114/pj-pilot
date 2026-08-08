@@ -35,7 +35,12 @@ function requireEnv(name: string): string {
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: "sqlite", schema }),
-  baseURL: process.env.BETTER_AUTH_URL,
+  // 未設定だと better-auth は baseURL と trustedOrigins を**リクエストの Host から
+  // 導出**する（実測でその旨の警告と、Host 由来の callback URL 生成を確認）。
+  // Vercel は登録済みドメイン以外を当該デプロイへルーティングしないため実害は
+  // 想定しにくいが、設定漏れは Preview で redirect_uri が Google 未登録の URL に
+  // なってログインが壊れる形でも出る。GOOGLE_* と同じく起動時に fail-fast させる。
+  baseURL: requireEnv("BETTER_AUTH_URL"),
   socialProviders: {
     google: {
       clientId: requireEnv("GOOGLE_CLIENT_ID"),
