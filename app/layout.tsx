@@ -1,5 +1,8 @@
 import "@mantine/core/styles.css";
 import "@mantine/notifications/styles.css";
+// `@mantine/charts` も自身のCSSを明示的にimportしないと、軸ラベル・凡例・
+// ツールチップの見た目が崩れる（`mantine-datatable` と同じ事情）。
+import "@mantine/charts/styles.css";
 // `mantine-datatable` は自身のCSSを明示的にimportしないと、空状態オーバーレイ
 // （`noRecordsText`）の位置決めCSSが効かず、レコードが存在するテーブルの上にも
 // 「タスクがありません」が重なって表示されてしまう（実機のスクリーンショットで
@@ -7,6 +10,7 @@ import "@mantine/notifications/styles.css";
 import "mantine-datatable/styles.css";
 
 import type { Metadata } from "next";
+import Link from "next/link";
 import {
   AppShell,
   AppShellHeader,
@@ -53,7 +57,34 @@ export default async function RootLayout({
               <AppShell header={{ height: 56 }} padding="md">
                 <AppShellHeader>
                   <Group h="100%" px="md" justify="space-between">
-                    <Text fw={700}>pj-pilot</Text>
+                    <Group gap="lg">
+                      <Text fw={700}>pj-pilot</Text>
+                      {/* ログイン済みのときだけ出す。未ログインでは押しても
+                          サインインへ飛ばされるだけで、導線として意味がないため。 */}
+                      {/*
+                        Mantine の polymorphic な `component` prop に next/link の Link を
+                        直接渡すと、Server Component（このファイル）から Client Component
+                        （Mantine Anchor）の境界を関数値のまま越えようとして
+                        "Functions cannot be passed directly to Client Components" で
+                        実行時エラーになる（app/projects/page.tsx と同じ罠。実際に踏んで確認済み）。
+                        Link で Text を包む形にすれば、関数そのものを props として
+                        越境させずに済む。
+                      */}
+                      {fullSession ? (
+                        <Group gap="md">
+                          <Link href="/projects">
+                            <Text component="span" size="sm">
+                              プロジェクト
+                            </Text>
+                          </Link>
+                          <Link href="/dashboard">
+                            <Text component="span" size="sm">
+                              ダッシュボード
+                            </Text>
+                          </Link>
+                        </Group>
+                      ) : null}
+                    </Group>
                     {fullSession ? (
                       <UserMenu name={fullSession.user.name} email={fullSession.user.email} />
                     ) : null}
