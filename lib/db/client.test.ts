@@ -1,11 +1,20 @@
+import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDb, enableForeignKeysForLocalDev, type DbHandle } from "./client";
+import {
+  LOCAL_BUSY_TIMEOUT_MS,
+  createDb,
+  enableForeignKeysForLocalDev,
+  type DbHandle,
+} from "./client";
 import { projectMembers, projects, tasks, user } from "./schema";
+
+/** ロック保持プロセスが書き込みロックを握っている時間。busy timeout より十分短くする。 */
+const HOLD_MS = 300;
 
 /**
  * DB 接続層・スキーマ・マイグレーションの結合テスト（M1 #8, #9）。
@@ -201,6 +210,84 @@ describe("db schema migration", () => {
       expect(updated!.updatedAt.getTime()).toBeGreaterThan(project!.updatedAt.getTime());
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe("createDb: ローカル/テストの busy timeout（E2Eの SQLITE_BUSY 対策）", () => {
+  /**
+   * Playwright のテストプロセスと Next.js サーバープロセスが同じ `file:local.db` に
+   * 書き込むため、SQLite の busy timeout（既定 0 = 即エラー）のままだと
+   * `SQLITE_BUSY: database is locked` で CI が非決定的に落ちる。
+   * `playwright.config.ts` の `workers: 1` はスペック間の並列を止めるだけで、
+   * プロセス間の競合には効かない。
+   */
+  it("ローカルのファイル DB では busy_timeout が設定される", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pj-pilot-busy-test-"));
+    const { client } = createDb(`file:${join(dir, "t.db")}`);
+    try {
+      const result = await client.execute("PRAGMA busy_timeout");
+      expect(Number(result.rows[0]?.timeout)).toBe(LOCAL_BUSY_TIMEOUT_MS);
+    } finally {
+      client.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("別プロセスが書き込みロックを保持していても、解放を待って書き込める", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pj-pilot-busy-e2e-test-"));
+    const dbPath = join(dir, "t.db");
+    const url = `file:${dbPath}`;
+
+    const setup = createDb(url);
+    await setup.client.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)");
+    setup.client.close();
+
+    // 別プロセスで BEGIN IMMEDIATE を張り、HOLD_MS 後に解放する。
+    // 同一プロセスの2接続では、同期ドライバが待機中にイベントループを止めてしまい
+    // 解放側の COMMIT が走れないため、この競合は再現できない（実測で確認済み）。
+    const holder = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import { createClient } from "@libsql/client";
+         const c = createClient({ url: ${JSON.stringify(url)} });
+         await c.execute("BEGIN IMMEDIATE");
+         await c.execute("INSERT INTO t (v) VALUES ('holder')");
+         console.log("LOCKED");
+         await new Promise((r) => setTimeout(r, ${HOLD_MS}));
+         await c.execute("COMMIT");
+         c.close();`,
+      ],
+      { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] },
+    );
+
+    const holderExited = new Promise<void>((resolve) => holder.on("exit", () => resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        holder.stdout.on("data", (chunk: Buffer) => {
+          if (chunk.toString().includes("LOCKED")) {
+            resolve();
+          }
+        });
+        holder.on("exit", (code) =>
+          reject(new Error(`ロック保持プロセスが早期終了しました: ${code}`)),
+        );
+      });
+
+      const writer = createDb(url);
+      try {
+        // busy_timeout が無いと、ここが 1ms ほどで SQLITE_BUSY を投げる（実測）。
+        await writer.client.execute("INSERT INTO t (v) VALUES ('writer')");
+        const rows = await writer.client.execute("SELECT v FROM t ORDER BY id");
+        expect(rows.rows.map((row) => row.v)).toEqual(["holder", "writer"]);
+      } finally {
+        writer.client.close();
+      }
+    } finally {
+      await holderExited;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

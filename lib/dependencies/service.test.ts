@@ -18,7 +18,12 @@ describe("dependencies/service", () => {
 
   beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "pj-pilot-dependencies-test-"));
-    handle = createDb(`file:${join(dir, "test.db")}`);
+    // busyTimeoutMs: 0（SQLite の既定＝即エラー）を明示する。このファイルには
+    // 「同一プロセス内で依存を並行作成して循環参照を狙う」TOCTOU 検証テストがあり、
+    // busy timeout があると待機中にイベントループごと止まって相手の
+    // トランザクションが進めず、タイムアウト分だけ固まってから結局失敗する
+    // （lib/db/client.ts の CreateDbOptions 参照）。
+    handle = createDb(`file:${join(dir, "test.db")}`, undefined, { busyTimeoutMs: 0 });
     await migrate(handle.db, { migrationsFolder: "./drizzle" });
 
     const [project] = await handle.db.insert(projects).values({ name: "P" }).returning();
