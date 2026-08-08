@@ -167,6 +167,76 @@ describe("board/service", () => {
       ).rejects.toThrow(NotFoundError);
     });
 
+    /**
+     * Issue #55: `board_order` が 0..n-1 に正規化されていない状態でも並び替えが壊れないこと。
+     *
+     * 画面の「新規タスク作成」（`createTaskAction`）は `boardOrder` を渡さないため、
+     * 実データのタスクは全て `board_order = 0` で作られる。削除・復元・Drawer からの
+     * ステータス変更でも重複や欠番ができる。`persistColumnOrder` が
+     * 「DB は既に正規化済み」を前提にしていると、こうした状態でリインデックスが
+     * 中途半端に終わり、ドラッグしたカードが意図しない位置（列の末尾など）へ飛ぶ。
+     */
+    it("board_order が全て 0 でも、並び替えた順序どおりに保存される", async () => {
+      const a = await insertTask({ title: "A", boardOrder: 0 });
+      const b = await insertTask({ title: "B", boardOrder: 0 });
+      const c = await insertTask({ title: "C", boardOrder: 0 });
+
+      // 画面に出ている順（board_order 昇順, id 昇順）を取得してから、先頭を2番目へ動かす
+      const shown = (await listBoardTasks(handle.db, SESSION, projectId))
+        .filter((t) => t.status === "todo")
+        .map((t) => t.id);
+      const dragged = shown[0]!;
+      const expected = [shown[1]!, shown[0]!, shown[2]!];
+
+      await moveTaskOnBoard(handle.db, SESSION, projectId, dragged, "todo", 1);
+
+      const after = (await listBoardTasks(handle.db, SESSION, projectId))
+        .filter((t) => t.status === "todo")
+        .map((t) => t.id);
+      expect(after).toEqual(expected);
+      // 保存後は 0..n-1 に正規化されていること（次の操作の前提を壊さない）
+      const rows = await handle.db.select().from(tasks).where(eq(tasks.projectId, projectId));
+      const orders = [a.id, b.id, c.id]
+        .map((id) => rows.find((r) => r.id === id)?.boardOrder)
+        .sort((x, y) => (x ?? 0) - (y ?? 0));
+      expect(orders).toEqual([0, 1, 2]);
+    });
+
+    it("board_order が重複していても、並び替えた順序どおりに保存される", async () => {
+      // 削除 → 並び替え → 復元で実際に起こる状態（A=0, B=1, C=1）
+      await insertTask({ title: "A", boardOrder: 0 });
+      await insertTask({ title: "B", boardOrder: 1 });
+      await insertTask({ title: "C", boardOrder: 1 });
+
+      const shown = (await listBoardTasks(handle.db, SESSION, projectId))
+        .filter((t) => t.status === "todo")
+        .map((t) => t.id);
+      const dragged = shown[2]!;
+      const expected = [shown[2]!, shown[0]!, shown[1]!];
+
+      await moveTaskOnBoard(handle.db, SESSION, projectId, dragged, "todo", 0);
+
+      const after = (await listBoardTasks(handle.db, SESSION, projectId))
+        .filter((t) => t.status === "todo")
+        .map((t) => t.id);
+      expect(after).toEqual(expected);
+    });
+
+    it("列をまたぐ移動でも、移動先の board_order が 0..n-1 に正規化される", async () => {
+      await insertTask({ title: "D1", status: "done", boardOrder: 0 });
+      await insertTask({ title: "D2", status: "done", boardOrder: 0 });
+      const t = await insertTask({ title: "T", status: "todo", boardOrder: 5 });
+
+      await moveTaskOnBoard(handle.db, SESSION, projectId, t.id, "done", 1);
+
+      const rows = await handle.db.select().from(tasks).where(eq(tasks.projectId, projectId));
+      const doneOrders = rows
+        .filter((r) => r.status === "done")
+        .map((r) => r.boardOrder)
+        .sort((x, y) => x - y);
+      expect(doneOrders).toEqual([0, 1, 2]);
+    });
+
     it("論理削除済みプロジェクトのタスクは動かせない（NotFoundError）", async () => {
       // PJ の削除は owner 限定だが（決定 D-15）、`deleteProject` は
       // `projects.deleted_at` を立てるだけで配下タスクには触れない。PJ の生存を

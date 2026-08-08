@@ -17,6 +17,8 @@ import { addSessionCookies, createTestUser } from "./helpers/auth";
 let session: Awaited<ReturnType<typeof createTestUser>>;
 let handle: DbHandle;
 let projectId: string;
+/** Issue #55 の回帰テスト専用のプロジェクト（他テストの並び順に影響されないよう分ける）。 */
+let newTaskProjectId: string;
 
 test.beforeAll(async () => {
   session = await createTestUser({ email: "e2e-board@example.com", name: "E2E Board" });
@@ -30,6 +32,13 @@ test.beforeAll(async () => {
     { name: `E2E カンバン検証用 ${Date.now()}` },
   );
   projectId = project.id;
+
+  const newTaskProject = await createProject(
+    handle.db,
+    { userId: session.userId },
+    { name: `E2E 新規作成順検証用 ${Date.now()}` },
+  );
+  newTaskProjectId = newTaskProject.id;
 
   // 未着手に3件だけ置く。他の列は空にしておき、「空の列へ移動できる」ことも検証する。
   for (const [index, title] of ["ボードA", "ボードB", "ボードC"].entries()) {
@@ -165,6 +174,48 @@ test("Drawerで編集して保存すると、カードの表示も更新され�
   await expect(
     page.getByTestId("board-card").filter({ hasText: "ボードC（更新済み）" }),
   ).toBeVisible({ timeout: 10_000 });
+});
+
+/**
+ * Issue #55 の回帰テスト。
+ *
+ * 上のテスト群は `beforeAll` で `boardOrder: index` を**明示的に**渡しているため、
+ * 「画面から新規作成したタスクをドラッグする」という実際の利用経路を踏んでいない。
+ * `createTaskAction` は `boardOrder` を渡さないので、採番が無いと全タスクが 0 になり、
+ * その状態でドラッグすると掴んだカードが列の末尾へ飛んでいた。
+ *
+ * ここでは画面の「新規タスク作成」から作り、そのままカンバンで並び替える。
+ */
+test("画面から作ったタスクをカンバンで並び替えても、掴んだ位置に留まる（Issue #55）", async ({
+  page,
+}) => {
+  const runId = Date.now().toString(36).slice(-6);
+  const titles = [`新規A${runId}`, `新規B${runId}`, `新規C${runId}`];
+
+  // UI の「新規タスク作成」から3件作る（boardOrder は渡されない経路）
+  await page.goto(`/projects/${newTaskProjectId}/tasks`);
+  for (const title of titles) {
+    await page.getByRole("button", { name: "新規タスク作成" }).click();
+    const drawer = page.getByRole("dialog");
+    await drawer.getByRole("textbox", { name: "タイトル" }).fill(title);
+    await drawer.getByRole("button", { name: "保存" }).click();
+    await expect(page.getByRole("dialog")).toBeHidden();
+  }
+
+  await page.goto(`/projects/${newTaskProjectId}/board`);
+  await expect(page.getByTestId("board-column-todo")).toBeVisible();
+  // 作成順に並ぶこと（採番が無いと id 依存の順序になり、この時点で崩れる）
+  expect(await columnTitles(page, "todo")).toEqual(titles);
+
+  // 先頭を1つ下へ動かす
+  await keyboardDrag(page, titles[0]!, "ArrowDown", 1);
+
+  const expected = [titles[1]!, titles[0]!, titles[2]!];
+  await expect.poll(() => columnTitles(page, "todo"), { timeout: 10_000 }).toEqual(expected);
+
+  await page.reload();
+  await expect(page.getByTestId("board-column-todo")).toBeVisible();
+  expect(await columnTitles(page, "todo")).toEqual(expected);
 });
 
 /**

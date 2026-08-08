@@ -129,6 +129,9 @@ async function seed(db: ReturnType<typeof createDb>["db"]) {
       status: "in_progress",
       estimatedHours: 40,
       sortOrder: 0,
+      // カンバンの列内順序。`createTask` を通さず素の insert をしているため、
+      // ここで明示しないと全件 0 になり、初期表示順が id（cuid2）依存になる（Issue #55）。
+      boardOrder: 0,
     })
     .returning();
 
@@ -143,6 +146,7 @@ async function seed(db: ReturnType<typeof createDb>["db"]) {
       priority: "high",
       estimatedHours: 120,
       sortOrder: 1,
+      boardOrder: 0,
     })
     .returning();
 
@@ -156,6 +160,7 @@ async function seed(db: ReturnType<typeof createDb>["db"]) {
       endDate: "2026-09-25",
       estimatedHours: 40,
       sortOrder: 2,
+      boardOrder: 1,
     })
     .returning();
 
@@ -169,6 +174,7 @@ async function seed(db: ReturnType<typeof createDb>["db"]) {
       startDate: "2026-09-30",
       endDate: "2026-09-30",
       sortOrder: 3,
+      boardOrder: 2,
     })
     .returning();
 
