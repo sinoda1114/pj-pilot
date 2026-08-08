@@ -18,9 +18,14 @@ import { getTaskById, listActiveChildren, type Db } from "../db/queries";
 import { tasks } from "../db/schema";
 
 /**
- * `taskId`（今しがた作成・更新・移動・削除されたタスク）の祖先を `parentId` チェーンで辿り、
- * `type = 'summary'` の祖先それぞれについて、生存している直接の子から
- * progress/estimatedHours/actualHours を再集計して書き戻す。
+ * `taskId` の祖先を `parentId` チェーンで辿り、`type = 'summary'` の祖先それぞれについて、
+ * 生存している直接の子から progress/estimatedHours/actualHours を再集計して書き戻す。
+ *
+ * 本番での呼び出し元は `app/projects/[id]/gantt/actions.ts` の `undoDateChangesAction`
+ * （「元に戻す」）**のみ**。タスクの作成・更新・削除（`lib/tasks/service.ts` /
+ * `lib/tasks/deletion.ts`）からは呼ばれていないため、Drawer で子の工数や進捗を変えても
+ * 親 summary は再集計されない。これは決定 D-11 に対する未接続であり、Issue #51 の
+ * 後半（「タスクはどうやって summary になるのか」）と併せて扱う。
  *
  * - 子に近い祖先から順に処理する（親summaryの再集計結果を、祖父summaryの集計に使えるようにするため）。
  * - 循環した `parent_id`（本来は起こらないはずの壊れたデータ）でも無限ループしないよう、
