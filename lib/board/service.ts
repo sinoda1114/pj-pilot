@@ -8,7 +8,7 @@
  * owner チェックは行わない（`lib/tasks/service.ts` と同じ）。
  */
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, type InferSelectModel } from "drizzle-orm";
 import type { LibSQLDatabase } from "drizzle-orm/libsql";
 import { requireLogin } from "../auth/authz";
 import type { AuthSession } from "../auth/types";
@@ -18,9 +18,30 @@ import type * as schema from "../db/schema";
 import { NotFoundError, ValidationError } from "../errors";
 import { moveAcrossColumns, reorderWithinColumn } from "./order";
 
-/** カンバンの列。既存の `tasks.status` をそのまま使う（決定 P2-01）。 */
+/** スキーマが定めるタスクのステータス。カンバンの列定義がこれと一致することを型で保証する。 */
+type TaskStatus = InferSelectModel<typeof tasks>["status"];
+
+/** カンバンの列。既存の `tasks.status` をそのまま使う（決定 P2-01）。左から並ぶ順。 */
 export const BOARD_STATUSES = ["todo", "in_progress", "review", "done"] as const;
 export type BoardStatus = (typeof BOARD_STATUSES)[number];
+
+/**
+ * 列の左からの位置。`Record<スキーマの status, number>` にしてあるため、
+ * `tasks.status` の enum に値が増えたら**ここがコンパイルエラーになり**、
+ * 列の追加漏れにビルド時点で気付ける。
+ *
+ * 実行時に「不正な status なら null」と握りつぶす形は採らない。`tasks.status` は
+ * Drizzle 側で 4 つのリテラル union に絞られており（`"bogus"` を代入すると型エラーに
+ * なることを確認済み）、DB にも `tasks_status_check` の CHECK 制約がある。
+ * 二重に守られている値を実行時に再チェックしても、将来 enum が増えたときに
+ * 「静かに列から消える」だけで、むしろ発見が遅れる。
+ */
+export const BOARD_COLUMN_ORDER: Record<TaskStatus, number> = {
+  todo: 0,
+  in_progress: 1,
+  review: 2,
+  done: 3,
+};
 
 export function isBoardStatus(value: unknown): value is BoardStatus {
   return typeof value === "string" && (BOARD_STATUSES as readonly string[]).includes(value);

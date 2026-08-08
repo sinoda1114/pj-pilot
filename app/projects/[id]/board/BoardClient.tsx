@@ -38,7 +38,11 @@ import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { TaskDrawer } from "../../../../components/tasks/TaskDrawer";
 import { moveAcrossColumns, reorderWithinColumn } from "../../../../lib/board/order";
-import { BOARD_STATUSES, type BoardStatus } from "../../../../lib/board/service";
+import {
+  BOARD_COLUMN_ORDER,
+  BOARD_STATUSES,
+  type BoardStatus,
+} from "../../../../lib/board/service";
 import type { tasks } from "../../../../lib/db/schema";
 import { priorityLabel, statusLabel } from "../../../../lib/labels";
 import { moveTaskOnBoardAction } from "./actions";
@@ -80,6 +84,21 @@ export function BoardClient({
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+
+  // `router.refresh()` で Server Component が再実行されると新しい `initialTasks` が
+  // props で降ってくる。ローカル state をそれに追随させないと、DB は更新済みなのに
+  // カードが古い内容（Drawer で変更する前のタイトル等）のまま残る
+  // （Cursor Bugbot の指摘。E2E で実際に再現してから修正した）。
+  //
+  // useEffect ではなく描画中に調整するのは React 公式が推奨する形
+  // （"You Might Not Need an Effect" の「props が変わったときに state を調整する」）。
+  // useEffect だと一度古い内容で描画してから上書きすることになり、ちらつく。
+  // Server Component は再実行のたびに新しい配列を返すため、参照比較で判定できる。
+  const [syncedTasks, setSyncedTasks] = useState<Task[]>(initialTasks);
+  if (syncedTasks !== initialTasks) {
+    setSyncedTasks(initialTasks);
+    setTasks(initialTasks);
+  }
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -127,8 +146,7 @@ export function BoardClient({
       .map((task) => patched.get(task.id) ?? task)
       .sort(
         (a, b) =>
-          BOARD_STATUSES.indexOf(a.status as BoardStatus) -
-            BOARD_STATUSES.indexOf(b.status as BoardStatus) ||
+          BOARD_COLUMN_ORDER[a.status] - BOARD_COLUMN_ORDER[b.status] ||
           a.boardOrder - b.boardOrder ||
           a.id.localeCompare(b.id),
       );

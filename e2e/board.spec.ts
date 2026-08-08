@@ -143,3 +143,26 @@ test("カードをクリックすると詳細Drawerが開く", async ({ page }) 
 
   await expect(page.getByRole("textbox", { name: "タイトル" })).toHaveValue("ボードC");
 });
+
+/**
+ * Cursor Bugbot の指摘（Medium）の回帰テスト。
+ *
+ * ボードは楽観更新のためにタスク一覧をローカル state に持つ。Drawer で保存したあと
+ * `router.refresh()` でサーバー側は取り直されるが、ローカル state を新しい props と
+ * 同期していないと、DB は更新済みなのにカードは古いタイトルのまま残る。
+ */
+test("Drawerで編集して保存すると、カードの表示も更新される", async ({ page }) => {
+  await page.goto(`/projects/${projectId}/board`);
+  await page.getByTestId("board-card").filter({ hasText: "ボードC" }).first().click();
+
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "タスク詳細" })).toBeVisible();
+  await dialog.getByLabel("タイトル").fill("ボードC（更新済み）");
+  await dialog.getByRole("button", { name: "保存" }).click();
+  await expect(dialog).toBeHidden();
+
+  // リロードせずに、その場のカード表示が更新されること
+  await expect(
+    page.getByTestId("board-card").filter({ hasText: "ボードC（更新済み）" }),
+  ).toBeVisible({ timeout: 10_000 });
+});
