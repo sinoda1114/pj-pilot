@@ -320,4 +320,89 @@ describe("app/projects/[id]/tasks/actions", () => {
       expect(result.ok).toBe(false);
     });
   });
+
+  /**
+   * URL 由来の `projectId` とクライアント由来の `taskId` の突き合わせ。
+   *
+   * Server Action はクライアントから任意の引数で直接呼べるため、ここを省くと
+   * ①他プロジェクトのタスクを操作できる、②owner が論理削除した PJ（配下タスクは
+   * 消えない）のタスクを誰でも操作し続けられる、の2つが起きる。いずれも実測で確認した。
+   */
+  describe("プロジェクト境界の検証", () => {
+    it("別プロジェクトのタスクは更新・削除・担当者変更のいずれもできない", async () => {
+      state.session = { userId: "u1" };
+
+      const [otherProject] = await handle.db.insert(projects).values({ name: "OTHER" }).returning();
+      if (!otherProject) throw new Error("unreachable");
+
+      const created = await createTaskAction(
+        otherProject.id,
+        { title: "VICTIM", startDate: "2026-08-01", endDate: "2026-08-05" },
+        [],
+      );
+      if (!created.ok || !created.taskId) throw new Error("unreachable");
+      const victimId = created.taskId;
+
+      // 攻撃者は自分が開いている projectId を名乗り、別 PJ の taskId を渡す
+      const updated = await updateTaskAction(
+        projectId,
+        victimId,
+        { title: "HACKED", startDate: "2030-01-01", endDate: "2030-01-02" },
+        [],
+      );
+      expect(updated.ok).toBe(false);
+
+      const assigned = await setTaskAssigneesAction(projectId, victimId, ["attacker"]);
+      expect(assigned.ok).toBe(false);
+
+      const deleted = await deleteTaskAction(projectId, victimId);
+      expect(deleted.ok).toBe(false);
+
+      // 被害側は何も変わっていないこと
+      const [row] = await handle.db.select().from(tasks).where(eq(tasks.id, victimId));
+      expect(row?.title).toBe("VICTIM");
+      expect(row?.deletedAt).toBeNull();
+      const assignees = await handle.db
+        .select()
+        .from(taskAssignees)
+        .where(eq(taskAssignees.taskId, victimId));
+      expect(assignees).toEqual([]);
+    });
+
+    it("論理削除されたプロジェクトのタスクは操作できない", async () => {
+      state.session = { userId: "u1" };
+
+      const [doomed] = await handle.db.insert(projects).values({ name: "DOOMED" }).returning();
+      if (!doomed) throw new Error("unreachable");
+
+      const created = await createTaskAction(
+        doomed.id,
+        { title: "KEEP", startDate: "2026-08-01", endDate: "2026-08-05" },
+        [],
+      );
+      if (!created.ok || !created.taskId) throw new Error("unreachable");
+      const taskId = created.taskId;
+
+      // owner が PJ を削除した状態（deleteProject は配下タスクには触れない）
+      await handle.db
+        .update(projects)
+        .set({ deletedAt: new Date() })
+        .where(eq(projects.id, doomed.id));
+
+      const updated = await updateTaskAction(
+        doomed.id,
+        taskId,
+        { title: "REVIVED", startDate: "2026-08-01", endDate: "2026-08-05" },
+        [],
+      );
+      expect(updated.ok).toBe(false);
+
+      const deleted = await deleteTaskAction(doomed.id, taskId);
+      expect(deleted.ok).toBe(false);
+
+      const [row] = await handle.db.select().from(tasks).where(eq(tasks.id, taskId));
+      expect(row?.title).toBe("KEEP");
+      expect(row?.deletedAt).toBeNull();
+    });
+  });
 });

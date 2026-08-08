@@ -13,9 +13,11 @@
  */
 
 import { revalidatePath } from "next/cache";
+import { requireLogin } from "../../../../lib/auth/authz";
 import { ForbiddenError, UnauthorizedError } from "../../../../lib/auth/errors";
 import { getSession } from "../../../../lib/auth/session";
 import { db } from "../../../../lib/db";
+import { getProjectScopedTask } from "../../../../lib/db/queries";
 import { NotFoundError, ValidationError } from "../../../../lib/errors";
 import { setTaskAssignees } from "../../../../lib/tasks/assignees";
 import {
@@ -27,6 +29,21 @@ import { HasChildrenError } from "../../../../lib/tasks/errors";
 import { createTask, updateTask } from "../../../../lib/tasks/service";
 
 export type ActionResult = { ok: true } | { ok: false; message: string };
+
+/**
+ * URL 由来の `projectId` と、クライアントから届いた `taskId` の整合を確かめる。
+ *
+ * Server Action はクライアントから任意の引数で直接呼べるため、これを省くと
+ * ①他プロジェクトのタスクを操作できる、②owner が論理削除した PJ（配下タスクは
+ * 消えない）のタスクを誰でも操作し続けられる、の2つが起きる。いずれも実測で確認済み。
+ * `app/projects/[id]/gantt/actions.ts` が既に行っている突き合わせと同じ趣旨。
+ */
+async function assertTaskInProject(projectId: string, taskId: string): Promise<void> {
+  const task = await getProjectScopedTask(db, projectId, taskId);
+  if (!task) {
+    throw new NotFoundError("タスクが見つかりません");
+  }
+}
 
 const PRIORITIES = ["low", "medium", "high", "urgent"] as const;
 const STATUSES = ["todo", "in_progress", "review", "done"] as const;
@@ -202,8 +219,13 @@ export async function updateTaskAction(
   const session = await getSession();
 
   try {
+    // 認可を最初に通す。`assertTaskInProject` が先だと、未ログインでも DB 照会が走り、
+    // 返るメッセージの違い（「ログインが必要です」/「タスクが見つかりません」）から
+    // taskId の所属を判別できてしまう（/code-review の指摘）。
+    requireLogin(session);
     assertValidTaskFormInput(input);
     const userIds = assertValidUserIds(assigneeUserIds);
+    await assertTaskInProject(projectId, taskId);
 
     await updateTask(db, session, taskId, {
       title: input.title.trim(),
@@ -243,6 +265,9 @@ export async function deleteTaskAction(
   const session = await getSession();
 
   try {
+    requireLogin(session);
+    await assertTaskInProject(projectId, taskId);
+
     if (mode === "subtree") {
       await deleteTaskSubtree(db, session, taskId);
     } else if (mode === "promote") {
@@ -266,7 +291,9 @@ export async function setTaskAssigneesAction(
   const session = await getSession();
 
   try {
+    requireLogin(session);
     const validated = assertValidUserIds(userIds);
+    await assertTaskInProject(projectId, taskId);
     await setTaskAssignees(db, session, taskId, validated);
 
     revalidatePath(`/projects/${projectId}/tasks`);

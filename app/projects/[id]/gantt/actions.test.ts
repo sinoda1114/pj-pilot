@@ -178,6 +178,22 @@ describe("app/projects/[id]/gantt/actions", () => {
     });
   });
 
+  describe("resizeTaskEndAction の不変条件", () => {
+    it("終了日が開始日より前になるリサイズは拒否し、DBを変更しない", async () => {
+      // SVAR 側にバー幅の clamp があるため Gantt UI からは起こせないが、
+      // Server Action は直接呼べるため守る。実測では -30 で
+      // 2026-08-10〜2026-07-13 という逆転データが書き込めてしまっていた。
+      state.session = SESSION;
+      const { a } = await setupProjectWithChain();
+
+      const result = await resizeTaskEndAction(projectId, a.id, -30, true);
+
+      expect(result.ok).toBe(false);
+      const [unchanged] = await handle.db.select().from(tasks).where(eq(tasks.id, a.id));
+      expect(unchanged).toMatchObject({ startDate: "2026-08-01", endDate: "2026-08-03" });
+    });
+  });
+
   describe("undoDateChangesAction", () => {
     it("指定した日付にタスクを戻す", async () => {
       state.session = SESSION;
@@ -238,6 +254,141 @@ describe("app/projects/[id]/gantt/actions", () => {
       ]);
 
       expect(result.ok).toBe(false);
+    });
+
+    it("終了日が開始日より前なら失敗する（他の全経路が守っている不変条件）", async () => {
+      // `lib/tasks/service.ts` の `assertValidDateRange` はフォーム経由の全更新で
+      // これを弾く。ここだけ抜けていると逆転した日付を注入でき、Gantt の描画と
+      // 伝播計算が壊れたうえ、UI からは直せなくなる。
+      state.session = SESSION;
+      const { a } = await setupProjectWithChain();
+
+      const result = await undoDateChangesAction(projectId, [
+        { id: a.id, startDate: "2031-01-01", endDate: "2030-01-02" },
+      ]);
+
+      expect(result.ok).toBe(false);
+      const [unchanged] = await handle.db.select().from(tasks).where(eq(tasks.id, a.id));
+      expect(unchanged).toMatchObject({ startDate: "2026-08-01", endDate: "2026-08-03" });
+    });
+
+    it("削除済みタスクが逆転した日付を持っていても、残りのタスクは戻せる", async () => {
+      // 検証より先に削除済みを落とさないと、ゴミ箱の中の旧バグ由来の逆転データで
+      // payload 全体が弾かれ、「削除済みは除外して残りは戻す」が働かない。
+      state.session = SESSION;
+      const { a, b } = await setupProjectWithChain();
+      await handle.db
+        .update(tasks)
+        .set({ deletedAt: new Date(), startDate: "2026-08-10", endDate: "2026-07-13" })
+        .where(eq(tasks.id, a.id));
+
+      const result = await undoDateChangesAction(projectId, [
+        // 削除済み a のスナップショットは逆転したまま
+        { id: a.id, startDate: "2026-08-10", endDate: "2026-07-13" },
+        { id: b.id, startDate: "2026-08-04", endDate: "2026-08-06" },
+      ]);
+
+      expect(result.ok).toBe(true);
+      const [restored] = await handle.db.select().from(tasks).where(eq(tasks.id, b.id));
+      expect(restored).toMatchObject({ startDate: "2026-08-04", endDate: "2026-08-06" });
+    });
+
+    it("論理削除済みタスクは書き換えず、残りのタスクは戻す", async () => {
+      // `listAllTasksByProject` は削除済みも返す（伝播が「後続が削除済みか」を見るために
+      // 必要）。絞らないとゴミ箱の中のタスクの日付まで書き換えられる。
+      // 一方で payload 全体を拒否すると、ドラッグから「元に戻す」までの間に他の誰かが
+      // 1件削除しただけで、正常なタスクまで戻せなくなる。該当分だけ落として残りは戻す。
+      state.session = SESSION;
+      const { a, b } = await setupProjectWithChain();
+      await handle.db.update(tasks).set({ deletedAt: new Date() }).where(eq(tasks.id, a.id));
+
+      const result = await undoDateChangesAction(projectId, [
+        { id: a.id, startDate: "1999-01-01", endDate: "1999-01-02" },
+        { id: b.id, startDate: "2026-08-04", endDate: "2026-08-06" },
+      ]);
+
+      expect(result.ok).toBe(true);
+      // 削除済みの a は書き換わっていない
+      const [deleted] = await handle.db.select().from(tasks).where(eq(tasks.id, a.id));
+      expect(deleted).toMatchObject({ startDate: "2026-08-01", endDate: "2026-08-03" });
+      // 生存している b は戻っている
+      const [restored] = await handle.db.select().from(tasks).where(eq(tasks.id, b.id));
+      expect(restored).toMatchObject({ startDate: "2026-08-04", endDate: "2026-08-06" });
+    });
+
+    it("既に逆転しているタスク自身も、移動なら動かせる（Gantt から位置を直せる）", async () => {
+      // 移動は start/end を同じ Δ だけずらす平行移動なので、逆転を作りも直しもしない。
+      // `after` だけを見て弾くと、旧バグ由来の逆転行を Gantt 上で動かせなくなる。
+      state.session = SESSION;
+      const { a } = await setupProjectWithChain();
+      await handle.db
+        .update(tasks)
+        .set({ startDate: "2026-08-10", endDate: "2026-07-13" })
+        .where(eq(tasks.id, a.id));
+
+      const result = await moveTaskAction(projectId, a.id, 3, true);
+
+      expect(result.ok).toBe(true);
+      const [moved] = await handle.db.select().from(tasks).where(eq(tasks.id, a.id));
+      expect(moved).toMatchObject({ startDate: "2026-08-13", endDate: "2026-07-16" });
+    });
+
+    it("逆転した子を持つサマリーがあっても、正常なタスクのドラッグは通る", async () => {
+      // サマリーの日付は子から導出されるため、子が1件でも逆転していると
+      // 再集計結果（after）が逆転する。実測: before 2026-08-01〜08-20 が
+      // after 2026-08-13〜07-16 になる。`result.changes` 全体を見て弾く実装だと、
+      // この巻き添えで正常な操作まで拒否されていた（Cursor Bugbot の指摘）。
+      state.session = SESSION;
+      const { project, a } = await setupProjectWithChain();
+      const [summary] = await handle.db
+        .insert(tasks)
+        .values({
+          projectId: project.id,
+          title: "S",
+          type: "summary",
+          startDate: "2026-08-01",
+          endDate: "2026-08-20",
+        })
+        .returning();
+      if (!summary) throw new Error("unreachable");
+      // 逆転した子（旧バグで書き込まれたデータを模す）を summary 配下に置き、
+      // a からの依存で動くようにする
+      const [child] = await handle.db
+        .insert(tasks)
+        .values({
+          projectId: project.id,
+          parentId: summary.id,
+          title: "C",
+          startDate: "2026-08-10",
+          endDate: "2026-07-13",
+        })
+        .returning();
+      if (!child) throw new Error("unreachable");
+      await handle.db
+        .insert(taskDependencies)
+        .values({ projectId: project.id, predecessorId: a.id, successorId: child.id });
+
+      const result = await moveTaskAction(projectId, a.id, 3, false);
+
+      expect(result.ok).toBe(true);
+    });
+
+    it("既に日付が逆転している行があっても、正常なタスクのドラッグは通る", async () => {
+      // `after` の逆転を一律で弾くと、旧バグ等で既に逆転している行が1つでもあるだけで
+      // そこへ伝播する無関係なタスクまで動かせなくなり、逆転行自身も修復できなくなる。
+      state.session = SESSION;
+      const { a, b } = await setupProjectWithChain();
+      // b を「既に逆転している」状態にする（旧バグで書き込まれたデータを模す）
+      await handle.db
+        .update(tasks)
+        .set({ startDate: "2026-08-10", endDate: "2026-07-13" })
+        .where(eq(tasks.id, b.id));
+
+      const result = await moveTaskAction(projectId, a.id, 3, false);
+
+      expect(result.ok).toBe(true);
+      const [movedA] = await handle.db.select().from(tasks).where(eq(tasks.id, a.id));
+      expect(movedA).toMatchObject({ startDate: "2026-08-04", endDate: "2026-08-06" });
     });
   });
 

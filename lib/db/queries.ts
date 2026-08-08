@@ -148,6 +148,36 @@ export async function listAllTasksByProject(db: Db, projectId: string) {
 }
 
 /**
+ * `taskId` が「生存しているプロジェクト `projectId` に属する」ことを確認して返す。
+ * 満たさなければ `undefined`。
+ *
+ * Server Action は URL 由来の `projectId` とクライアントから来た `taskId` を別々に
+ * 受け取るため、両者の整合を明示的に確かめないと次の2つが起きる。
+ *
+ *   - **他プロジェクトのタスクを操作できる**（`projectId` を検証していないと
+ *     `taskId` だけで到達できてしまう）。
+ *   - **論理削除済みプロジェクトのタスクを操作できる**。PJ の削除は owner 限定だが
+ *     （決定 D-15）、`deleteProject` は `projects.deleted_at` を立てるだけで配下の
+ *     タスクには触れない。タスク側のヘルパー（`getActiveTask`）は `tasks.deleted_at`
+ *     しか見ないため、owner が消して画面から見えなくなった PJ のタスクを、
+ *     誰でも編集・削除・復元し続けられてしまう。
+ *
+ * **タスク自身の生存は見ない**（`tasks.deleted_at` でフィルタしない）。ゴミ箱からの
+ * 復元（`restoreTaskAction`）が削除済みタスクを対象にするため。生存が必要な呼び出し側は
+ * 従来どおり `getActiveTask` / service 層のチェックを併用すること（多層防御、§4.4(c)）。
+ */
+export async function getProjectScopedTask(db: Db, projectId: string, taskId: string) {
+  const [row] = await db
+    .select({ task: tasks })
+    .from(tasks)
+    .innerJoin(projects, eq(tasks.projectId, projects.id))
+    .where(and(eq(tasks.id, taskId), eq(tasks.projectId, projectId), isNull(projects.deletedAt)))
+    .limit(1);
+
+  return row?.task;
+}
+
+/**
  * `task_dependencies` に `deleted_at` は無い（決定 D-06: タスク削除時も依存レコード自体は残す）。
  * そのため生存フィルタは不要で、単純にプロジェクト単位で全件返す。
  */
