@@ -5,7 +5,7 @@ import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDb, enableForeignKeysForLocalDev, type DbHandle } from "./client";
-import { projects, tasks } from "./schema";
+import { projectMembers, projects, tasks, user } from "./schema";
 
 /**
  * DB 接続層・スキーマ・マイグレーションの結合テスト（M1 #8, #9）。
@@ -82,6 +82,29 @@ describe("db schema migration", () => {
     await expect(
       handle.client.execute({ sql: "DELETE FROM projects WHERE id = ?", args: [project!.id] }),
     ).rejects.toThrow(/FOREIGN KEY constraint failed/);
+  });
+
+  it("project_members.userId は存在しないユーザーIDへの参照を外部キー制約で拒否する（フォローアップ課題）", async () => {
+    const [project] = await handle.db.insert(projects).values({ name: "P" }).returning();
+
+    await expect(
+      handle.client.execute({
+        sql: "INSERT INTO project_members (project_id, user_id, role) VALUES (?, ?, ?)",
+        args: [project!.id, "no-such-user", "owner"],
+      }),
+    ).rejects.toThrow(/FOREIGN KEY constraint failed/);
+
+    const [created] = await handle.db
+      .insert(user)
+      .values({ id: "u1", name: "U", email: "u1@example.com" })
+      .returning();
+
+    const [member] = await handle.db
+      .insert(projectMembers)
+      .values({ projectId: project!.id, userId: created!.id, role: "owner" })
+      .returning();
+
+    expect(member?.userId).toBe("u1");
   });
 
   it("親タスクの id 重複や必須カラム欠落は挿入時に拒否される", async () => {
