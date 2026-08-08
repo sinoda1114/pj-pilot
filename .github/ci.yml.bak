@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Better Auth（決定D-04）は起動時に `BETTER_AUTH_SECRET` 等の設定を要求する
+# （未設定でもビルド自体は警告止まりで失敗しないが、実際のログイン導線
+# （e2eジョブ）の検証には正しく機能する値が必要）。ここでは実クレデンシャルでは
+# ない、CI専用のダミー値を使う（実Google OAuthは`test:e2e`では使わず、
+# `better-auth/plugins`の`testUtils`でセッションを直接発行するため、
+# GOOGLE_CLIENT_ID/SECRETの値自体は使われない）。
+env:
+  BETTER_AUTH_SECRET: ci-only-dummy-secret-not-for-production-use-1234567890
+  BETTER_AUTH_URL: http://localhost:3000
+  GOOGLE_CLIENT_ID: ci-dummy-client-id
+  GOOGLE_CLIENT_SECRET: ci-dummy-client-secret
+  ALLOWED_EMAIL_DOMAINS: example.com
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test (カバレッジ閾値チェック込み)
+        run: npm run test:coverage
+
+      - name: Build
+        run: npm run build
+
+      - name: Audit (high以上を検出)
+        run: npm audit --audit-level=high
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run DB migrations
+        run: npm run db:migrate
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: E2E tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
