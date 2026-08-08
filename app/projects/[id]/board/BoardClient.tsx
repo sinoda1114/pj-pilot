@@ -94,8 +94,15 @@ export function BoardClient({
   // （"You Might Not Need an Effect" の「props が変わったときに state を調整する」）。
   // useEffect だと一度古い内容で描画してから上書きすることになり、ちらつく。
   // Server Component は再実行のたびに新しい配列を返すため、参照比較で判定できる。
+  //
+  // ただし**移動の確定待ちの間は同期しない**。連続してドラッグしたとき、前の移動の
+  // router.refresh() が後の移動の確定より先に着地することがあり、そのまま同期すると
+  // 楽観更新が「移動前のサーバー状態」で上書きされてカードが一瞬戻る
+  // （Cursor Bugbot の2回目の指摘。上の同期を入れたことで生まれた競合）。
+  // 確定待ちが 0 に戻った時点で再描画が走り、そのとき最新の props と同期される。
+  const [pendingMoveCount, setPendingMoveCount] = useState(0);
   const [syncedTasks, setSyncedTasks] = useState<Task[]>(initialTasks);
-  if (syncedTasks !== initialTasks) {
+  if (pendingMoveCount === 0 && syncedTasks !== initialTasks) {
     setSyncedTasks(initialTasks);
     setTasks(initialTasks);
   }
@@ -201,16 +208,28 @@ export function BoardClient({
     const normalizedIndex = optimistic
       .filter((row) => row.status === toStatus)
       .findIndex((row) => row.id === taskId);
-    const result = await moveTaskOnBoardAction(projectId, taskId, toStatus, normalizedIndex);
 
-    if (!result.ok) {
-      // 失敗したら楽観更新を巻き戻す。サーバー側は何も変わっていない。
-      setTasks(snapshot);
-      notifications.show({ color: "red", title: "移動できませんでした", message: result.message });
-      return;
+    // 確定待ちの間は props との同期を止める（上の pendingMoveCount のコメント参照）。
+    // finally で必ず戻すこと。戻し忘れると props の変更が二度と反映されなくなる。
+    setPendingMoveCount((count) => count + 1);
+    try {
+      const result = await moveTaskOnBoardAction(projectId, taskId, toStatus, normalizedIndex);
+
+      if (!result.ok) {
+        // 失敗したら楽観更新を巻き戻す。サーバー側は何も変わっていない。
+        setTasks(snapshot);
+        notifications.show({
+          color: "red",
+          title: "移動できませんでした",
+          message: result.message,
+        });
+        return;
+      }
+
+      router.refresh();
+    } finally {
+      setPendingMoveCount((count) => count - 1);
     }
-
-    router.refresh();
   }
 
   const activeTask = activeTaskId ? tasksById.get(activeTaskId) : null;
