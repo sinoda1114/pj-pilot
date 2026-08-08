@@ -263,6 +263,14 @@ describe("createDb: ローカル/テストの busy timeout（E2Eの SQLITE_BUSY 
       { cwd: process.cwd(), stdio: ["ignore", "pipe", "pipe"] },
     );
 
+    // stderr は「捨てるための drain」ではなく蓄積する。ロック保持プロセスが失敗した
+    // ときに理由が分からないと、CI の flaky を追うためのこのテスト自体が
+    // 診断不能になるため（Amazon Q の指摘に対する対応。読み捨てずに失敗メッセージへ載せる）。
+    let holderStderr = "";
+    holder.stderr.on("data", (chunk: Buffer) => {
+      holderStderr += chunk.toString();
+    });
+
     const holderExited = new Promise<void>((resolve) => holder.on("exit", () => resolve()));
     try {
       await new Promise<void>((resolve, reject) => {
@@ -271,8 +279,17 @@ describe("createDb: ローカル/テストの busy timeout（E2Eの SQLITE_BUSY 
             resolve();
           }
         });
+        // spawn 自体が失敗した場合（実行ファイルが見つからない等）は 'exit' ではなく
+        // 'error' が発火する。リスナーが無いと unhandled 'error' event でプロセスごと落ちる。
+        holder.on("error", (error) =>
+          reject(new Error(`ロック保持プロセスを起動できませんでした: ${error.message}`)),
+        );
         holder.on("exit", (code) =>
-          reject(new Error(`ロック保持プロセスが早期終了しました: ${code}`)),
+          reject(
+            new Error(
+              `ロック保持プロセスが早期終了しました（exit ${code}）: ${holderStderr.trim() || "stderr は空"}`,
+            ),
+          ),
         );
       });
 
