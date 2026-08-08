@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { UnauthorizedError, ForbiddenError } from "../auth/errors";
 import { createDb, type DbHandle } from "../db/client";
 import { projectMembers, projects } from "../db/schema";
+import { insertTestUsers } from "../db/testHelpers";
 import { NotFoundError } from "../errors";
 import { createProject, deleteProject, listProjects, updateProject } from "./service";
 
@@ -21,6 +22,7 @@ describe("projects/service", () => {
     dir = mkdtempSync(join(tmpdir(), "pj-pilot-projects-test-"));
     handle = createDb(`file:${join(dir, "test.db")}`);
     await migrate(handle.db, { migrationsFolder: "./drizzle" });
+    await insertTestUsers(handle.db, [OWNER.userId, OTHER_MEMBER.userId]);
   });
 
   afterEach(() => {

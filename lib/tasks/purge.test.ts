@@ -6,6 +6,7 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDb, type DbHandle } from "../db/client";
 import { projectMembers, projects, taskAssignees, taskDependencies, tasks } from "../db/schema";
+import { insertTestUsers } from "../db/testHelpers";
 import { purgeExpiredTrash } from "./purge";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -26,6 +27,7 @@ describe("purgeExpiredTrash（M1 #9c / §4.4(a)(b)）", () => {
     dir = mkdtempSync(join(tmpdir(), "pj-pilot-purge-test-"));
     handle = createDb(`file:${join(dir, "test.db")}`);
     await migrate(handle.db, { migrationsFolder: "./drizzle" });
+    await insertTestUsers(handle.db, ["owner-1"]);
 
     const [project] = await handle.db.insert(projects).values({ name: "P" }).returning();
     if (!project) {

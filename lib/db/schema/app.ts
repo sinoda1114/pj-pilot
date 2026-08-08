@@ -4,12 +4,17 @@
  * 認証まわり（user / session / account / verification）はここに含めない。
  * `lib/db/schema/auth.ts`（`npx auth@1.6.26 generate` の出力）に分離している。
  *
- * `project_members.userId` / `task_assignees.userId` は依然として外部キー
- * 制約なしの text のまま（本PRでは追加しない）。既存シードデータ
- * （`scripts/seed.ts` の `"seed-owner"`/`"seed-member"`）が実際の
- * `user.id`（Better Authが発行する値）と一致しないため、`scripts/seed.ts` を
- * 実ユーザー作成ベースに書き換えるのと同じタイミングでFKを追加する
- * フォローアップ課題として切り出す。
+ * `project_members.userId` は `user.id` への外部キー制約を持つ（Better Auth導入・
+ * `scripts/seed.ts` の実ユーザー作成ベースへの書き換えと同じタイミングで追加。
+ * フォローアップ課題として切り出していたもの）。`onDelete` は他のFK同様に宣言
+ * しない（決定D-06/§4.4・リスクR-7。Turso の HTTP接続では `PRAGMA foreign_keys
+ * = ON` を接続ごとに保証できないため、カスケード削除をDBに任せず、関連行の削除は
+ * 常にアプリ層で明示的に行う設計のため）。
+ *
+ * `task_assignees.userId` にはFKを付けていない。`components/tasks/TaskDrawer.tsx`
+ * の`TagsInput`が示す通り、担当者は実際には自由入力のラベルであり
+ * （プロジェクトへのメンバー招待機能が無く、`user.id`と紐付ける手段が無い）、
+ * 必ずしも実在の`user`行を指すとは限らないため。
  */
 
 import { sql } from "drizzle-orm";
@@ -25,6 +30,7 @@ import {
   unique,
 } from "drizzle-orm/sqlite-core";
 import { createId } from "@paralleldrive/cuid2";
+import { user } from "./auth";
 
 const timestamps = {
   createdAt: integer("created_at", { mode: "timestamp" })
@@ -60,7 +66,7 @@ export const projects = sqliteTable(
 /**
  * PJ メンバーと権限。閲覧は全ログインユーザーに開いている（決定 D-08）ため、
  * このテーブルは可視性の制御には使わない。role='owner' が PJ 削除権限を持つ
- * （決定 D-15）。userId は認証テーブル追加まで FK 制約なし。
+ * （決定 D-15）。
  */
 export const projectMembers = sqliteTable(
   "project_members",
@@ -68,7 +74,9 @@ export const projectMembers = sqliteTable(
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id),
-    userId: text("user_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id),
     role: text("role", { enum: ["owner", "member"] })
       .notNull()
       .default("member"),
@@ -144,7 +152,7 @@ export const tasks = sqliteTable(
   ],
 );
 
-/** 複数担当者の中間テーブル。userId は認証テーブル追加まで FK 制約なし。 */
+/** 複数担当者の中間テーブル。 */
 export const taskAssignees = sqliteTable(
   "task_assignees",
   {

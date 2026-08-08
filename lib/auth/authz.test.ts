@@ -5,6 +5,7 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDb, type DbHandle } from "../db/client";
 import { projectMembers, projects } from "../db/schema";
+import { insertTestUsers } from "../db/testHelpers";
 import { requireLogin, requireProjectOwner } from "./authz";
 import { ForbiddenError, UnauthorizedError } from "./errors";
 
@@ -28,6 +29,7 @@ describe("requireProjectOwner", () => {
     dir = mkdtempSync(join(tmpdir(), "pj-pilot-authz-test-"));
     handle = createDb(`file:${join(dir, "test.db")}`);
     await migrate(handle.db, { migrationsFolder: "./drizzle" });
+    await insertTestUsers(handle.db, ["owner-1", "member-1"]);
   });
 
   afterEach(() => {
