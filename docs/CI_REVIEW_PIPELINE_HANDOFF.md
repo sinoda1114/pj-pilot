@@ -46,8 +46,9 @@ PR #33で実際に動いた構成、および観測した具体的な事象。
 
 1. **Require status checks to pass before merging** を有効化し、必須チェックとして
    **`ci / build`・`ci / e2e`** の2ジョブを指定する。
-   - ⚠️ **チェック名に注意。** PR #38（標準CI `sinoda1114/ci-standard` への切替）以降、
-     再利用ワークフロー呼び出しになったため、チェック名は `build` / `e2e` ではなく
+   - ⚠️ **チェック名に注意。** PR #38（標準CI `sinoda1114/ci-standard` への切替、**マージ済み**）
+     により `.github/workflows/ci.yml` は再利用ワークフロー呼び出しになった。このため
+     `main` 上のチェック名は `build` / `e2e` ではなく
      **`ci / build` / `ci / e2e`**（`<呼び出し側のjob id> / <呼び出し先のjob名>`）になる。
      旧名を指定すると、そのチェックは永久に報告されず**全PRがマージ不能**になる。
      設定前に実際のPRのチェック一覧で名前を確認すること。
@@ -81,17 +82,47 @@ PR #33で実際に動いた構成、および観測した具体的な事象。
   （すでにCLAUDE.mdの「レビュー依頼のプロンプト」節に近い記載はあるが、
   「複数ボットの矛盾」への言及は無い）。
 
-## 4. テストカバレッジのしきい値チェック（実装可能・フォローアップPRで検討）
+## 4. テストカバレッジのしきい値チェック ✅ 対応済み（PR #35）
 
-現状CIは「テストが通るか」のみで、カバレッジ%の計測・しきい値強制は無い
-（`vitest.config.ts`に`coverage`設定なし）。導入する場合:
+**この項目は本ドキュメント作成後に完了しました。追加作業は不要です。**
 
-```bash
-npm install --save-dev @vitest/coverage-v8
+`vitest.config.ts` に `test.coverage`（provider: v8、statements / branches / functions / lines の
+しきい値）が定義済みで、CI の build ジョブが `npm run test:coverage` を実行しています。
+しきい値は実測値の少し下に置くラチェット方式（statements 85 / branches 75 / functions 85 /
+lines 85）で、カバレッジの退行だけを止める設定です。向上したら随時引き上げます。
+
+## 4b. E2Eの flaky（`SQLITE_BUSY: database is locked`）⚠️ 未解決
+
+**PR #34 の CI で実際に再現しました**（[run 31233023338](https://github.com/sinoda1114/pj-pilot/actions/runs/31233023338/job/93040407105)）。
+Markdown 1ファイルの追加しかない PR で e2e が 2件失敗しており、変更内容とは無関係です。
+
+```
+Error: Failed query: insert into "user" ...
+  at e2e/helpers/auth.ts:66
+[cause]: LibsqlError: SQLITE_BUSY: database is locked
 ```
 
-`vitest.config.ts`に`test.coverage`を追加し、CIに`vitest run --coverage`のジョブを追加する。
-しきい値は既存カバレッジの実測値を先に取ってから決める（いきなり高い値を強制しない）。
+**`playwright.config.ts` の `workers: 1` / `fullyParallel: false` では防げません。**
+この設定はスペック間の並列を止めるものですが、ロックの衝突は**プロセス間**で起きているためです。
+
+| 書き込むプロセス | 経路 |
+|---|---|
+| Playwright のテストプロセス | `e2e/helpers/auth.ts` → `createDb()` → `file:local.db` |
+| Next.js サーバープロセス（`webServer`） | Server Actions → `lib/db` → `file:local.db` |
+
+同じ SQLite ファイルに別プロセスから同時に書き込むため、ワーカーを1つにしても衝突します。
+`retries: 2` があってもリトライごとに同じ競合が起きうるため、たまに 3回とも落ちます。
+
+想定される対処（未検証。着手時に実測すること）:
+
+1. **`PRAGMA busy_timeout` を設定する**（最有力）。既定は 0 で、ロック中は即エラーになる。
+   数千 ms 待たせれば、この程度の競合はほぼ吸収できる。`lib/db/client.ts` の
+   `enableForeignKeysForLocalDev` と同じ場所に、ローカル/テスト限定で入れられる。
+2. **`PRAGMA journal_mode = WAL`** を併用する。読み取りが書き込みをブロックしなくなる。
+3. テストプロセスと実サーバーで DB ファイルを分ける（構成が複雑になるので最後の手段）。
+
+1 と 2 は本番の Turso HTTP 接続には影響しません（`client.ts` の設計方針どおり、
+ローカル/テストのファイル DB でのみ有効化する）。
 
 ## 5. Visual regression（見た目の自動回帰検知）の検討
 
@@ -131,6 +162,8 @@ Secret scanning・Push protectionを有効化する作業自体は別ドキュ�
 |---|---|---|
 | 1. ブランチ保護（必須チェック・会話解決必須化） | 高 | 今回「レビュー中でもマージできる」状態を実際に経験した |
 | 2. Copilot連携の確認 | 中 | 動いていない設定を放置すると誤解のもとになる |
-| 3. 裁定ポリシー明文化 | 中 | 実装コストが低く、今回学んだことをすぐ反映できる |
+| 3. 裁定ポリシー明文化 | 中 | 実装コストが低く、今回学んだことをすぐ反映できる（PR #36 で対応） |
+| 4b. E2Eの flaky（SQLITE_BUSY） | 高 | 変更と無関係にCIが赤くなる。放置すると「赤でもマージしてよい」という判断が常態化し、ブランチ保護（1節）の意味が失われる |
 | 8. Secret scanning確認 | 中 | Public リポジトリのため実害が大きい（R-5参照） |
-| 4〜7 | 低〜中 | アプリ規模・チーム規模に対してはオーバースペック気味。必要になった時点で着手でよい |
+| 4 | ✅ 完了 | PR #35 で導入済み |
+| 5〜7 | 低〜中 | アプリ規模・チーム規模に対してはオーバースペック気味。必要になった時点で着手でよい |
