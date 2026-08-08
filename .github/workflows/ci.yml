@@ -1,11 +1,21 @@
 # 標準CI呼び出し（実体: https://github.com/sinoda1114/ci-standard）
 # CI専用の環境変数は .github/ci.env に置く（標準CIが自動読み込み）。
+# このファイルを対象リポジトリの .github/workflows/ci.yml に置く。
+# 中身の実体は sinoda1114/ci-standard 側にあり、標準の改善は全リポジトリへ自動反映される。
 name: CI
 
 on:
   pull_request:
   push:
     branches: [main]
+
+# 同一refに新しいpushが来たら進行中の旧ジョブをキャンセル（無駄打ち防止）
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   ci:
