@@ -524,3 +524,24 @@ describe("aggregateSummaryValues", () => {
     expect(result.progress).toBe(83);
   });
 });
+
+describe("aggregateSummaryValues: 境界値（Devin Review指摘の反映）", () => {
+  it("estimatedHours が 0 の子は加重 0 となり進捗集計から除外される", () => {
+    // 0 は `?? 1` のフォールバックに掛からない（null/undefined のみ）。
+    // 見積 0h のタスクは進捗の加重平均に寄与しない、を仕様として固定する
+    const result = aggregateSummaryValues([
+      { progress: 100, estimatedHours: 0, actualHours: null },
+      { progress: 50, estimatedHours: 2, actualHours: null },
+    ]);
+    expect(result).toEqual({ progress: 50, estimatedHours: 2, actualHours: 0 });
+  });
+
+  it("加重平均がちょうど .5 のときは正方向に丸める（Math.round準拠）", () => {
+    // (0*1 + 1*1) / 2 = 0.5 → 1
+    const result = aggregateSummaryValues([
+      { progress: 0, estimatedHours: 1, actualHours: null },
+      { progress: 1, estimatedHours: 1, actualHours: null },
+    ]);
+    expect(result.progress).toBe(1);
+  });
+});
