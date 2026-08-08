@@ -37,7 +37,7 @@ export interface TaskChange {
 }
 
 /** 伝播が枝を打ち切った理由。トーストでの通知に使う（§5.4）。 */
-export type SkipReason = "pinned" | "deleted";
+export type SkipReason = "pinned" | "deleted" | "summary";
 
 export interface SkippedTask {
   id: string;

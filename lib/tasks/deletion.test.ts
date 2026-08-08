@@ -257,6 +257,59 @@ describe("tasks/deletion", () => {
       expect((await getTaskById(handle.db, root.id))?.deletedAt).toBeNull();
     });
 
+    /**
+     * Issue #54: 「子タスクごと削除」したあと親だけを復元すると、子孫がゴミ箱に
+     * 取り残され、30日後の cron で静かに物理削除されていた（データ消失）。
+     *
+     * 復元の範囲は「**同じ操作で消したもの**」に限る。`deleteTaskSubtree` は全行に
+     * 同一の `deleted_at` を入れるので、それを手掛かりに判定する。別々のタイミングで
+     * 消した子まで巻き込んで戻すと、利用者が意図して残したものを勝手に復活させて
+     * しまうため。
+     */
+    it("サブツリー削除した親を復元すると、同時に消した子孫もまとめて戻る（Issue #54）", async () => {
+      const root = await insertTask({ title: "root" });
+      const child = await insertTask({ title: "child", parentId: root.id });
+      const grandchild = await insertTask({ title: "grandchild", parentId: child.id });
+      await deleteTaskSubtree(handle.db, SESSION, root.id);
+
+      await restoreTask(handle.db, SESSION, root.id);
+
+      expect((await getTaskById(handle.db, root.id))?.deletedAt).toBeNull();
+      expect((await getTaskById(handle.db, child.id))?.deletedAt).toBeNull();
+      expect((await getTaskById(handle.db, grandchild.id))?.deletedAt).toBeNull();
+    });
+
+    it("別のタイミングで消した子孫は復活させない", async () => {
+      const root = await insertTask({ title: "root" });
+      const child = await insertTask({ title: "child", parentId: root.id });
+      // 先に子だけを消しておく（利用者が意図して消したもの）
+      await deleteTask(handle.db, SESSION, child.id);
+      await handle.db
+        .update(tasks)
+        .set({ deletedAt: new Date("2020-01-01T00:00:00Z") })
+        .where(eq(tasks.id, child.id));
+      // そのあと親を消す
+      await deleteTask(handle.db, SESSION, root.id);
+
+      await restoreTask(handle.db, SESSION, root.id);
+
+      expect((await getTaskById(handle.db, root.id))?.deletedAt).toBeNull();
+      expect((await getTaskById(handle.db, child.id))?.deletedAt).not.toBeNull();
+    });
+
+    it("子孫の復元は祖先の復元と両立する（中間から復元しても全体が戻る）", async () => {
+      const root = await insertTask({ title: "root" });
+      const child = await insertTask({ title: "child", parentId: root.id });
+      const grandchild = await insertTask({ title: "grandchild", parentId: child.id });
+      await deleteTaskSubtree(handle.db, SESSION, root.id);
+
+      await restoreTask(handle.db, SESSION, child.id);
+
+      expect((await getTaskById(handle.db, root.id))?.deletedAt).toBeNull();
+      expect((await getTaskById(handle.db, child.id))?.deletedAt).toBeNull();
+      expect((await getTaskById(handle.db, grandchild.id))?.deletedAt).toBeNull();
+    });
+
     it("生存している祖先には触らない", async () => {
       const root = await insertTask({ title: "root" });
       const child = await insertTask({ title: "child", parentId: root.id });
@@ -295,5 +348,128 @@ describe("tasks/deletion", () => {
 
       await expect(restoreTask(handle.db, SESSION, a.id)).resolves.toBeUndefined();
     });
+  });
+});
+
+/**
+ * summary の印の付け外し（Issue #51）。
+ *
+ * 親子関係が変わるすべての経路で整合が取れていないと、「生存する子を持つ task」
+ * （決定 D-11 の集計が効かない）や「子が0件の summary」（カンバン・ダッシュボードから
+ * 消え、Gantt でもドラッグできない行き止まり）が生まれる。
+ */
+describe("削除・復元と type='summary' の整合", () => {
+  let dir: string;
+  let handle: DbHandle;
+  let projectId: string;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "pj-pilot-summary-marker-test-"));
+    handle = createDb(`file:${join(dir, "test.db")}`);
+    await migrate(handle.db, { migrationsFolder: "./drizzle" });
+    const [project] = await handle.db.insert(projects).values({ name: "P" }).returning();
+    projectId = project!.id;
+  });
+
+  afterEach(() => {
+    try {
+      handle.client.close();
+    } finally {
+      if (existsSync(dir)) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  async function mk(title: string, parentId: string | null, type: "task" | "summary" = "task") {
+    const [t] = await handle.db
+      .insert(tasks)
+      .values({
+        projectId,
+        title,
+        parentId,
+        type,
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      })
+      .returning();
+    return t!;
+  }
+
+  it("最後の子を削除すると、親の summary の印が外れる", async () => {
+    const parent = await mk("親", null, "summary");
+    const child = await mk("子", parent.id);
+
+    await deleteTask(handle.db, SESSION, child.id);
+
+    expect((await getTaskById(handle.db, parent.id))?.type).toBe("task");
+  });
+
+  it("子が残っているうちは summary のままにする", async () => {
+    const parent = await mk("親", null, "summary");
+    const a = await mk("子A", parent.id);
+    await mk("子B", parent.id);
+
+    await deleteTask(handle.db, SESSION, a.id);
+
+    expect((await getTaskById(handle.db, parent.id))?.type).toBe("summary");
+  });
+
+  it("サブツリー削除でも、残された親の印が外れる", async () => {
+    const parent = await mk("親", null, "summary");
+    const child = await mk("子", parent.id, "summary");
+    await mk("孫", child.id);
+
+    await deleteTaskSubtree(handle.db, SESSION, child.id);
+
+    expect((await getTaskById(handle.db, parent.id))?.type).toBe("task");
+  });
+
+  it("子を繰り上げて削除すると、繰り上げ先が summary になる", async () => {
+    const grandparent = await mk("祖父", null);
+    const parent = await mk("親", grandparent.id, "summary");
+    await mk("子", parent.id);
+
+    await promoteChildrenAndDeleteTask(handle.db, SESSION, parent.id);
+
+    // 子は祖父の直下へ上がるので、祖父が summary になる
+    expect((await getTaskById(handle.db, grandparent.id))?.type).toBe("summary");
+  });
+
+  it("復元すると、親に summary の印が付き直す", async () => {
+    const parent = await mk("親", null, "summary");
+    const child = await mk("子", parent.id);
+    // 最後の子を消して印が外れた状態を作る
+    await deleteTask(handle.db, SESSION, child.id);
+    expect((await getTaskById(handle.db, parent.id))?.type).toBe("task");
+
+    await restoreTask(handle.db, SESSION, child.id);
+
+    expect((await getTaskById(handle.db, parent.id))?.type).toBe("summary");
+  });
+
+  it("子を繰り上げて消したサマリーを復元しても、子0件のサマリーは復活させない", async () => {
+    // 復元は親方向だけでなく自分自身の印も整える必要がある。子0件のサマリーが
+    // 復活すると、カンバン・ダッシュボードから消え Gantt でも動かせない
+    // 行き止まりの行になる（実測で再現）。
+    const grandparent = await mk("祖父", null);
+    const parent = await mk("親", grandparent.id, "summary");
+    await mk("子", parent.id);
+    await promoteChildrenAndDeleteTask(handle.db, SESSION, parent.id);
+
+    await restoreTask(handle.db, SESSION, parent.id);
+
+    expect((await getTaskById(handle.db, parent.id))?.type).toBe("task");
+  });
+
+  it("マイルストーンは印の付け外しで書き換えない", async () => {
+    const parent = await mk("親", null);
+    await handle.db.update(tasks).set({ type: "milestone" }).where(eq(tasks.id, parent.id));
+    const child = await mk("子", parent.id);
+
+    await restoreTask(handle.db, SESSION, child.id);
+    await deleteTask(handle.db, SESSION, child.id);
+
+    expect((await getTaskById(handle.db, parent.id))?.type).toBe("milestone");
   });
 });

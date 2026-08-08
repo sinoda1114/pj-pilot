@@ -106,6 +106,27 @@ export function computeProjectProgress(
 ): ProjectProgress[] {
   const countable = tasks.filter(isCountable);
 
+  /**
+   * 完了率を 0〜100 の整数で返す（タスク 0 件なら null）。
+   *
+   * **100% は「全件完了」のときだけ**にする。素の `Math.round` だと 200 件中 199 件
+   * （99.5%）が 100% に切り上がり、「完了率 100% なのに未完了が残っている」という
+   * 表示になるため、未完了が1件でもあれば 99% で止める。
+   *
+   * 逆側（300件中1件 → 0%）に同様のクランプは**入れない**。0% は「まだ実質
+   * 動いていない」を素直に表しており、100% 側のような矛盾（「完了なのに残っている」）
+   * を生まないため。1件でも完了していれば 1% と出したい場合は仕様を決め直す。
+   */
+  function toPercent(done: number, total: number): number | null {
+    if (total === 0) {
+      return null;
+    }
+    if (done === total) {
+      return 100;
+    }
+    return Math.min(99, Math.round((done / total) * 100));
+  }
+
   return projects.map((project) => {
     const own = countable.filter((task) => task.projectId === project.id);
     const done = own.filter((task) => task.status === "done").length;
@@ -116,7 +137,7 @@ export function computeProjectProgress(
       total: own.length,
       done,
       // タスクが無いプロジェクトは 0% ではなく null。画面側で「タスクなし」と出す。
-      percent: own.length === 0 ? null : Math.round((done / own.length) * 100),
+      percent: toPercent(done, own.length),
     };
   });
 }

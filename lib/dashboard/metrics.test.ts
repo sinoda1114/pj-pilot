@@ -196,3 +196,59 @@ describe("dashboard/metrics", () => {
     });
   });
 });
+
+describe("computeProjectProgress: 100% の丸め", () => {
+  /**
+   * `Math.round` のままだと 200 件中 199 件完了（99.5%）が 100% に切り上がり、
+   * 「完了率 100% なのに未完了タスクが残っている」という表示になる。
+   * 100% は「全件完了」のときだけに限る。
+   */
+  it("未完了が残っているうちは 100% にしない", () => {
+    const tasks = Array.from({ length: 200 }, (_, i) => ({
+      id: `t${i}`,
+      projectId: "p1",
+      title: `T${i}`,
+      status: (i < 199 ? "done" : "todo") as "done" | "todo",
+      type: "task" as const,
+      endDate: "2026-08-01",
+    }));
+
+    const [row] = computeProjectProgress([{ id: "p1", name: "P" }], tasks);
+
+    expect(row?.done).toBe(199);
+    expect(row?.total).toBe(200);
+    expect(row?.percent).toBe(99);
+  });
+
+  it("全件完了なら 100% になる", () => {
+    const tasks = Array.from({ length: 3 }, (_, i) => ({
+      id: `t${i}`,
+      projectId: "p1",
+      title: `T${i}`,
+      status: "done" as const,
+      type: "task" as const,
+      endDate: "2026-08-01",
+    }));
+
+    const [row] = computeProjectProgress([{ id: "p1", name: "P" }], tasks);
+
+    expect(row?.percent).toBe(100);
+  });
+
+  it("1件も完了していなければ 0% のまま（切り上げない）", () => {
+    const tasks = Array.from({ length: 200 }, (_, i) => ({
+      id: `t${i}`,
+      projectId: "p1",
+      title: `T${i}`,
+      status: (i === 0 ? "done" : "todo") as "done" | "todo",
+      type: "task" as const,
+      endDate: "2026-08-01",
+    }));
+
+    const [row] = computeProjectProgress([{ id: "p1", name: "P" }], tasks);
+
+    // 0.5% は四捨五入すると 1%。0 に落とすのは「未着手」と誤解させるため、
+    // ここは従来どおり Math.round のままでよい。
+    expect(row?.percent).toBe(1);
+  });
+});

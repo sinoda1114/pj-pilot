@@ -34,6 +34,7 @@ import {
   resizeTaskEndAction,
   undoDateChangesAction,
 } from "../../app/projects/[id]/gantt/actions";
+import type { SkipReason } from "../../lib/scheduling/types";
 import {
   fromGanttEndDate,
   fromGanttStartDate,
@@ -134,10 +135,44 @@ const zoom: IZoomConfig = {
   ],
 };
 
-const SKIP_REASON_LABEL: Record<"pinned" | "deleted", string> = {
+const SKIP_REASON_LABEL: Record<SkipReason, string> = {
   pinned: "ピン留めのため",
   deleted: "削除済みのため",
+  // サマリーは子から日付が決まるので伝播で動かさず、そこで枝を打ち切る（Issue #50）。
+  summary: "サマリーのため",
 };
+
+/**
+ * `rootId` の子孫の id を返す（`rootId` 自身は含まない）。
+ *
+ * サマリーのドラッグを拒否したあと、SVAR が一緒に動かした子孫のバー位置も
+ * 戻すために使う。壊れた `parentId`（循環）でも無限ループしないよう `visited` で防ぐ。
+ */
+function descendantIdsOf(rows: DbTaskLike[], rootId: string): string[] {
+  const childrenOf = new Map<string, string[]>();
+  for (const row of rows) {
+    if (!row.parentId) {
+      continue;
+    }
+    childrenOf.set(row.parentId, [...(childrenOf.get(row.parentId) ?? []), row.id]);
+  }
+
+  const ids: string[] = [];
+  const visited = new Set<string>([rootId]);
+  const queue = [rootId];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const childId of childrenOf.get(current) ?? []) {
+      if (visited.has(childId)) {
+        continue;
+      }
+      visited.add(childId);
+      ids.push(childId);
+      queue.push(childId);
+    }
+  }
+  return ids;
+}
 
 export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
   // Server Component から渡された初期データを保持しつつ、ドラッグ確定後の
@@ -186,6 +221,19 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
     setPrevTasks(tasks);
     setTaskRows(tasks);
   }
+
+  // `api.intercept(...)` は `init` コールバック内で1回だけ登録され、そのクロージャは
+  // **初回レンダー時の値で固定される**（`@svar-ui/react-gantt` の dist を読んで確認）。
+  // サマリードラッグの巻き戻しで `tasks` を直接参照すると、ページ読み込み後に子を
+  // ドラッグして確定させた変更が無かったことにされ、まさに防ごうとしている
+  // 「画面と DB の食い違い」を自分で作ってしまう（/code-review の指摘）。ref で最新を渡す。
+  // 代入をレンダー中ではなく `useEffect` で行うのは `react-hooks/refs` に従うため。
+  // ref を読むのはドラッグ操作のハンドラ内（コミット後・ユーザー操作時）だけなので、
+  // 反映が1フレーム遅れても実害はない。
+  const taskRowsRef = useRef(taskRows);
+  useEffect(() => {
+    taskRowsRef.current = taskRows;
+  }, [taskRows]);
 
   const [prevDependencies, setPrevDependencies] = useState(dependencies);
   const [dependencyRows, setDependencyRows] = useState(dependencies);
@@ -291,7 +339,7 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
     }
     const skippedLines = [...skippedBySameReason.entries()].map(
       ([reason, count]) =>
-        `${count}件は${SKIP_REASON_LABEL[reason as "pinned" | "deleted"]}移動しませんでした`,
+        `${count}件は${SKIP_REASON_LABEL[reason as SkipReason]}移動しませんでした`,
     );
 
     notifications.show({
@@ -403,6 +451,54 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
                 const diff = ev.diff;
                 if (typeof diff !== "number" || diff === 0) {
                   return true;
+                }
+
+                // サマリーのバーはドラッグさせない（Issue #50）。
+                // SVAR はサマリー行のバー（`.wx-bar.wx-summary`）も通常どおりドラッグ
+                // できてしまうが、サマリーの日付は子から導出するのが正（決定 D-11）。
+                // 動かすと子が取り残されて日付が乖離し、あとで子を1日でも動かした
+                // 瞬間に再集計が走って**利用者が触っていない行が勝手に元へ戻る**
+                // （実機で再現を確認した）。
+                //
+                // マイルストーンは対象外。子から日付を導出する仕組みが無いため、
+                // ここで止めると Gantt から日付を変える手段が無くなってしまう。
+                //
+                // **`false` を返すだけでは足りない。** SVAR はドラッグ中にバーの座標を
+                // 既に書き換えており（サマリーの場合は子孫のバーも一緒に動く）、拒否しても
+                // 視覚位置が戻らず画面と DB が食い違う（実測: 100px ずれたまま）。
+                // サーバ確定失敗時と同じ手順で、サマリー自身と全子孫の位置を明示的に戻す。
+                //
+                // 戻す値は `api.getTask` から取る。`intercept` 時点では今回のドラッグが
+                // まだ内部状態に適用されていない（下の `before` と同じ理由）ため、これが
+                // 「ドラッグ直前の値」になる。`tasks` prop 由来の `taskRowsRef` を使うと、
+                // 直前に子をドラッグして確定した直後（`revalidatePath` が返る前）に
+                // サマリーを掴んだ場合、その子だけ確定前の日付へ巻き戻ってしまい、
+                // まさに防ごうとしている画面と DB の食い違いを作る（Cursor Bugbot 指摘）。
+                // SVAR の内部状態はドラッグ確定時に更新され、サーバ確定に失敗したときは
+                // `applyDragChange` が巻き戻すので、常に DB と一致している。
+                const target = api.getTask(ev.id);
+                if (target?.type === "summary") {
+                  // 親子構造だけは prop 由来で引く（日付と違い、ドラッグでは変わらない）。
+                  const rows = taskRowsRef.current;
+                  for (const id of [String(ev.id), ...descendantIdsOf(rows, String(ev.id))]) {
+                    const authoritative = api.getTask(id);
+                    if (!authoritative?.start || !authoritative?.end) {
+                      continue;
+                    }
+                    const start = authoritative.start;
+                    const end = authoritative.end;
+                    // 同じ値を書いても SVAR は「変化なし」とみなして座標を再計算しない
+                    // （実測でバーがずれたまま残った）。いったん別の値を書いてから
+                    // 正しい値に戻し、再計算を強制する。
+                    const nudged = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+                    api.exec("update-task", { id, task: { start: nudged, end }, skipUndo: true });
+                    api.exec("update-task", { id, task: { start, end }, skipUndo: true });
+                  }
+                  notifications.show({
+                    color: "gray",
+                    message: "サマリーの期間は子タスクから自動で決まります",
+                  });
+                  return false;
                 }
 
                 // `task.start` の有無で移動/リサイズを判定する（決定D-01: リサイズは

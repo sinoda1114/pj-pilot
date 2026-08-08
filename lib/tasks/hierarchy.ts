@@ -30,6 +30,7 @@ import { getActiveTask, listActiveTasksByParent, type Db } from "../db/queries";
 import { tasks } from "../db/schema";
 import type * as schema from "../db/schema";
 import { NotFoundError, ValidationError } from "../errors";
+import { markAsSummary, unmarkSummaryIfChildless } from "./summary-marker";
 
 /**
  * 新しい親（`parentId`）の生存している子の中で最大の `sortOrder + 1` を返す
@@ -82,8 +83,11 @@ export async function indentTask(
       .update(tasks)
       .set({ parentId: precedingSibling.id, sortOrder: newSortOrder })
       .where(eq(tasks.id, taskId));
+
+    await markAsSummary(tx, precedingSibling.id);
   });
 }
+
 
 /**
  * タスクを「現在の親と同じ階層（親の直後）」に上げる（WBSのアウトデント操作）。
@@ -121,5 +125,13 @@ export async function outdentTask(
       .update(tasks)
       .set({ parentId: grandparentId, sortOrder: newSortOrder })
       .where(eq(tasks.id, taskId));
+
+    // 元の親から最後の子が抜けたら summary の印を外す。
+    await unmarkSummaryIfChildless(tx, parent.id);
+    // 祖父母は子（この task）を持つようになったので印を付ける。ルート直下へ
+    // 上がった場合（grandparentId が null）は対象なし。
+    if (grandparentId) {
+      await markAsSummary(tx, grandparentId);
+    }
   });
 }
