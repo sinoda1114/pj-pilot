@@ -154,9 +154,49 @@ describe("tasks/deletion", () => {
         NotFoundError,
       );
     });
+
+    it("循環した parent_id があっても無限ループせず、循環に含まれるタスクを削除する（防御的ガード）", async () => {
+      // 本来 CHECK 制約でも防げない多段循環（A→B→A）を直接 SQL で作る。
+      // 子孫の収集が訪問済み判定を失うと、この構造で処理が返ってこなくなる。
+      const a = await insertTask({ title: "A" });
+      const b = await insertTask({ title: "B", parentId: a.id });
+      await handle.db.update(tasks).set({ parentId: b.id }).where(eq(tasks.id, a.id));
+
+      await expect(deleteTaskSubtree(handle.db, SESSION, a.id)).resolves.toBeUndefined();
+
+      expect((await getTaskById(handle.db, a.id))?.deletedAt).not.toBeNull();
+      expect((await getTaskById(handle.db, b.id))?.deletedAt).not.toBeNull();
+    });
   });
 
   describe("promoteChildrenAndDeleteTask", () => {
+    it("ログインしていなければ UnauthorizedError を投げる", async () => {
+      const task = await insertTask();
+      await expect(promoteChildrenAndDeleteTask(handle.db, null, task.id)).rejects.toThrow(
+        UnauthorizedError,
+      );
+    });
+
+    it("存在しないタスクは NotFoundError を投げる", async () => {
+      await expect(promoteChildrenAndDeleteTask(handle.db, SESSION, "nonexistent")).rejects.toThrow(
+        NotFoundError,
+      );
+    });
+
+    it("既に論理削除済みのタスクは NotFoundError を投げる（二重削除で子を巻き込まない）", async () => {
+      const parent = await insertTask({ title: "親" });
+      const child = await insertTask({ title: "子", parentId: parent.id });
+      await promoteChildrenAndDeleteTask(handle.db, SESSION, parent.id);
+
+      await expect(promoteChildrenAndDeleteTask(handle.db, SESSION, parent.id)).rejects.toThrow(
+        NotFoundError,
+      );
+
+      // 1回目の繰り上げでルートに上がった子が、2回目の呼び出しで動かされていない。
+      expect((await getTaskById(handle.db, child.id))?.parentId).toBeNull();
+      expect((await getTaskById(handle.db, child.id))?.deletedAt).toBeNull();
+    });
+
     it("決定 D-02: 子の parent_id を祖父に付け替えて、親だけ削除する", async () => {
       const grandparent = await insertTask({ title: "祖父" });
       const parent = await insertTask({ title: "親", parentId: grandparent.id });
@@ -225,6 +265,25 @@ describe("tasks/deletion", () => {
       await restoreTask(handle.db, SESSION, child.id);
 
       expect((await getTaskById(handle.db, root.id))?.deletedAt).toBeNull();
+    });
+
+    it("祖先の行が物理削除で消えていても、そこで打ち切って対象タスクだけ復元する", async () => {
+      // 実際に起こり得る状態: `lib/tasks/purge.ts` は 30 日超前に論理削除された
+      // タスクを子の `parent_id` を書き換えずに物理削除する。本番（Turso の HTTP 接続）は
+      // 外部キー制約が効かない前提（lib/db/client.ts）なので、親だけ先に消えて
+      // 子の `parent_id` が宙に浮いたゴミ箱タスクが残り得る。
+      // その状態で復元しても NotFoundError にならず復元できることを確認する。
+      const ancestor = await insertTask({ title: "先に物理削除される祖先" });
+      const child = await insertTask({ title: "残る子", parentId: ancestor.id });
+      await deleteTaskSubtree(handle.db, SESSION, ancestor.id);
+      // テスト DB では外部キー制約が有効なので、本番相当の状態を作るため一時的に外す。
+      await handle.client.execute("PRAGMA foreign_keys = OFF;");
+      await handle.db.delete(tasks).where(eq(tasks.id, ancestor.id));
+      await handle.client.execute("PRAGMA foreign_keys = ON;");
+
+      await expect(restoreTask(handle.db, SESSION, child.id)).resolves.toBeUndefined();
+
+      expect((await getTaskById(handle.db, child.id))?.deletedAt).toBeNull();
     });
 
     it("循環した parent_id があっても無限ループしない（防御的ガード）", async () => {

@@ -12,7 +12,8 @@ import { Anchor, Badge, Button, Card, Group, Stack, Table, Text, Title } from "@
 import Link from "next/link";
 import { useState } from "react";
 import { BOARD_STATUSES, type BoardStatus } from "../../lib/board/service";
-import type { DashboardData } from "../../lib/dashboard/service";
+import type { DashboardData, OverdueTaskRow } from "../../lib/dashboard/service";
+import { buildCsvFileName, toCsv, withUtf8Bom, type CsvColumn } from "../../lib/export/csv";
 import { statusLabel } from "../../lib/labels";
 
 /** ステータスの色。カンバン（BoardClient）と揃える。 */
@@ -37,6 +38,39 @@ const PROJECT_NAME_MAX_CHARS = 9;
 
 function truncateProjectName(name: string): string {
   return name.length > PROJECT_NAME_MAX_CHARS ? `${name.slice(0, PROJECT_NAME_MAX_CHARS)}…` : name;
+}
+
+/**
+ * 期限超過一覧の CSV 列定義。表の列（プロジェクト/タスク/ステータス/終了日）に合わせる。
+ * ステータスは DB の英字 enum ではなく日本語ラベルで出す（決定 D-19）。
+ */
+const OVERDUE_CSV_COLUMNS: CsvColumn<OverdueTaskRow>[] = [
+  { header: "プロジェクト", value: (task) => task.projectName },
+  { header: "タスク", value: (task) => task.title },
+  { header: "ステータス", value: (task) => statusLabel(task.status) },
+  { header: "終了日", value: (task) => task.endDate },
+];
+
+/**
+ * CSV 文字列をファイルとしてダウンロードさせる。
+ *
+ * 集計済みのデータがすでにクライアントにあるため、専用の API エンドポイントは作らず
+ * Blob と `URL.createObjectURL` で完結させる。生成した object URL は必ず
+ * `revokeObjectURL` で解放する。解放を次のイベントループに回しているのは、
+ * `click()` の直後に同期的に解放するとブラウザによってはダウンロード開始前に
+ * URL が無効化されうるため。アンカーを一度 DOM に挿入するのは、切り離した要素の
+ * `click()` を無視するブラウザ（Firefox）があるため。
+ */
+function downloadCsvFile(fileName: string, csv: string): void {
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 export function DashboardClient({ data, today }: { data: DashboardData; today: string }) {
@@ -64,6 +98,22 @@ export function DashboardClient({ data, today }: { data: DashboardData; today: s
   const visibleOverdue = showAllOverdue
     ? overdueTasks
     : overdueTasks.slice(0, OVERDUE_PREVIEW_COUNT);
+
+  /**
+   * 期限超過タスクを CSV でダウンロードする。
+   *
+   * 「もっと見る」で折りたたまれている分も含めて**全件**出す。ここでの省略は
+   * 画面が長くなりすぎないための表示上の都合にすぎず、20 件で切れたファイルが
+   * 出てくる方が利用者の意図から外れるため。
+   * ファイル名の日付は画面に出している基準日（サーバー側で
+   * `todayInTimeZone("Asia/Tokyo")` として求めた値）と同じものを使い、
+   * 「どの日を基準に抽出した一覧か」がファイル名と画面で食い違わないようにする。
+   * Excel で開かれる前提なので BOM を付ける。
+   */
+  function handleDownloadOverdueCsv() {
+    const csv = toCsv(overdueTasks, OVERDUE_CSV_COLUMNS);
+    downloadCsvFile(buildCsvFileName("overdue-tasks", today), withUtf8Bom(csv));
+  }
 
   return (
     <Stack gap="lg">
@@ -139,9 +189,22 @@ export function DashboardClient({ data, today }: { data: DashboardData; today: s
           <Title order={3} size="h5">
             期限超過タスク
           </Title>
-          <Badge color={overdueTasks.length > 0 ? "red" : "gray"} variant="light">
-            {overdueTasks.length}
-          </Badge>
+          <Group gap="sm">
+            <Badge color={overdueTasks.length > 0 ? "red" : "gray"} variant="light">
+              {overdueTasks.length}
+            </Badge>
+            {/* 0 件のときはボタン自体を出さない。中身のない CSV を渡しても使い道がないため。 */}
+            {overdueTasks.length > 0 ? (
+              <Button
+                variant="default"
+                size="xs"
+                onClick={handleDownloadOverdueCsv}
+                data-testid="overdue-csv-download"
+              >
+                CSVダウンロード
+              </Button>
+            ) : null}
+          </Group>
         </Group>
 
         {overdueTasks.length === 0 ? (
