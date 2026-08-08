@@ -45,7 +45,13 @@ PR #33で実際に動いた構成、および観測した具体的な事象。
 `Settings → Branches → Branch protection rules → main` で以下を確認・設定する。
 
 1. **Require status checks to pass before merging** を有効化し、必須チェックとして
-   `CI / build`・`CI / e2e` の2ジョブを指定する。
+   **`ci / build`・`ci / e2e`** の2ジョブを指定する。
+   - ⚠️ **チェック名に注意。** PR #38（標準CI `sinoda1114/ci-standard` への切替）以降、
+     再利用ワークフロー呼び出しになったため、チェック名は `build` / `e2e` ではなく
+     **`ci / build` / `ci / e2e`**（`<呼び出し側のjob id> / <呼び出し先のjob名>`）になる。
+     旧名を指定すると、そのチェックは永久に報告されず**全PRがマージ不能**になる。
+     設定前に実際のPRのチェック一覧で名前を確認すること。
+   - `ci / detect` は `build` / `e2e` の前提ジョブであり、必須に含める必要はない。
    - **Devin Review・Amazon Q・Cursor Bugbotは必須チェックに含めない**こと。
      これらはコミットステータス/チェックが最後まで解決しないことがある
      （上記0節参照）ため、必須にすると正当なPRがマージ不能になるリスクがある。
