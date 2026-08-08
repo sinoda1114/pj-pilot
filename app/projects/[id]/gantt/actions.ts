@@ -97,17 +97,21 @@ async function runPropagation(
     // `deltaDays` の範囲チェックと同じ趣旨でここでも守る。
     // 逆転データが入ると Gantt の描画と伝播計算が壊れ、フォームは「終了日は開始日以降」
     // で弾くため UI からは直せなくなる。
-    // 判定は「この操作が新たに逆転を作ったか」に限る。`after` が逆転している行を
-    // 一律で弾くと、旧バグ等で**既に**逆転している行が1つでもあるだけで、そこへ伝播する
-    // 無関係なタスクのドラッグまで全部失敗し、しかも逆転行自身の移動も拒否されるため
-    // Gantt から修復できなくなる（/code-review の指摘。再現も確認した）。
-    // Δ シフトは逆転の幅を変えないので、`before` が既に逆転している行は素通ししてよい。
-    const newlyInverted = result.changes.find(
-      (change) =>
-        change.before.endDate >= change.before.startDate &&
-        change.after.endDate < change.after.startDate,
-    );
-    if (newlyInverted) {
+    // 判定は**操作対象のタスク1件だけ**を見る。
+    //
+    // 逆転を新たに作れるのはリサイズ（終了日だけを Δ シフトする）の対象タスクに限られる。
+    // 後続タスクは start/end を同じ Δ だけずらすので区間の長さが変わらず、サマリーの
+    // 日付は子から導出した結果でしかない。
+    //
+    // 一方で `result.changes` 全体を見ると、旧バグ等で**既に**逆転している行の巻き添えで
+    // 正常な操作まで拒否されてしまう。実測で確認した2パターン:
+    //   - 逆転行へ伝播する無関係なタスクのドラッグが全拒否され、逆転行自身の移動も
+    //     拒否されるため Gantt から修復できなくなる（/code-review の指摘）
+    //   - 逆転した子を1件持つサマリーは、再集計の結果 `before` 正常 → `after` 逆転に
+    //     なる（実測: 2026-08-01〜08-20 → 2026-08-13〜07-16）。`/code-review` は
+    //     「サマリーは逆転しない」としていたが誤りで、Cursor Bugbot の指摘が正しかった
+    const targetChange = result.changes.find((change) => change.id === taskId);
+    if (targetChange && targetChange.after.endDate < targetChange.after.startDate) {
       throw new ValidationError("終了日は開始日以降である必要があります");
     }
 
@@ -166,12 +170,25 @@ export async function undoDateChangesAction(
     // （IDOR）。§4.4(c) の「素の db.select() を書かず lib/db/queries.ts を通す」
     // 規約に沿って取得したタスク一覧と突き合わせる。
     const dbTasks = await listAllTasksByProject(db, projectId);
-    const validTaskIds = new Set(dbTasks.map((t) => t.id));
-    // 不正な入力（他プロジェクトの ID・壊れた日付・逆転した日付）は payload 全体を拒否する。
+
+    // **先に**削除済みタスクを落とす。`listAllTasksByProject` は削除済みも返すため
+    // （伝播が「後続が削除済みか」を見るために必要）、絞らないとゴミ箱の中のタスクの
+    // 日付まで書き換わる。一方でドラッグ確定から「元に戻す」を押すまでの間に別の誰かが
+    // 1件削除しただけで payload 全体を弾くと、他の正常なタスクまで戻せなくなる。
+    //
+    // 検証より前に落とすのが要点。順序が逆だと、削除済みタスクのスナップショットが
+    // 旧バグ由来の逆転した日付を持っていた場合に payload 全体が弾かれ、「削除済みは
+    // 除外して残りは戻す」という意図が働かない（Cursor Bugbot の指摘。実測で確認）。
+    const deletedIds = new Set(dbTasks.filter((t) => t.deletedAt !== null).map((t) => t.id));
+    const applicable = changes.filter((c) => !deletedIds.has(c.id));
+
+    // 残った分を検証する。他プロジェクトの ID・壊れた日付・逆転した日付が1つでもあれば
+    // 全体を拒否する（正規の Undo payload には現れない＝改竄とみなす）。
     // 終了日 ≧ 開始日 は全経路で守っている不変条件（`lib/tasks/service.ts` の
     // `assertValidDateRange`）。ここだけ抜けていると逆転した日付を注入され、Gantt の
     // 描画と伝播計算が壊れたうえ、フォームが弾くので UI からは直せなくなる。
-    const isInvalid = changes.some(
+    const validTaskIds = new Set(dbTasks.map((t) => t.id));
+    const isInvalid = applicable.some(
       (c) =>
         !validTaskIds.has(c.id) ||
         !isValidDateOnly(c.startDate) ||
@@ -181,15 +198,6 @@ export async function undoDateChangesAction(
     if (isInvalid) {
       throw new ValidationError("元に戻す内容が不正です");
     }
-
-    // 削除済みタスクは「拒否」ではなく「除外」する。`listAllTasksByProject` は削除済みも
-    // 返すため（伝播が「後続が削除済みか」を見るために必要）、絞らないとゴミ箱の中の
-    // タスクの日付まで書き換わる。一方でドラッグ確定から「元に戻す」を押すまでの間に
-    // 別の誰かが1件削除しただけで payload 全体を弾くと、他の正常なタスクまで戻せなくなる
-    // （/code-review の指摘）。ゴミ箱の中のタスクの日付を戻しても意味がないので、
-    // 該当分だけ落として残りを戻す。
-    const deletedIds = new Set(dbTasks.filter((t) => t.deletedAt !== null).map((t) => t.id));
-    const applicable = changes.filter((c) => !deletedIds.has(c.id));
 
     await persistPropagateResult(db, {
       changes: applicable.map((c) => ({

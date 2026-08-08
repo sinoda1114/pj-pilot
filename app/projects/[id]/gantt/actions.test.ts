@@ -272,6 +272,27 @@ describe("app/projects/[id]/gantt/actions", () => {
       expect(unchanged).toMatchObject({ startDate: "2026-08-01", endDate: "2026-08-03" });
     });
 
+    it("削除済みタスクが逆転した日付を持っていても、残りのタスクは戻せる", async () => {
+      // 検証より先に削除済みを落とさないと、ゴミ箱の中の旧バグ由来の逆転データで
+      // payload 全体が弾かれ、「削除済みは除外して残りは戻す」が働かない。
+      state.session = SESSION;
+      const { a, b } = await setupProjectWithChain();
+      await handle.db
+        .update(tasks)
+        .set({ deletedAt: new Date(), startDate: "2026-08-10", endDate: "2026-07-13" })
+        .where(eq(tasks.id, a.id));
+
+      const result = await undoDateChangesAction(projectId, [
+        // 削除済み a のスナップショットは逆転したまま
+        { id: a.id, startDate: "2026-08-10", endDate: "2026-07-13" },
+        { id: b.id, startDate: "2026-08-04", endDate: "2026-08-06" },
+      ]);
+
+      expect(result.ok).toBe(true);
+      const [restored] = await handle.db.select().from(tasks).where(eq(tasks.id, b.id));
+      expect(restored).toMatchObject({ startDate: "2026-08-04", endDate: "2026-08-06" });
+    });
+
     it("論理削除済みタスクは書き換えず、残りのタスクは戻す", async () => {
       // `listAllTasksByProject` は削除済みも返す（伝播が「後続が削除済みか」を見るために
       // 必要）。絞らないとゴミ箱の中のタスクの日付まで書き換えられる。
@@ -293,6 +314,46 @@ describe("app/projects/[id]/gantt/actions", () => {
       // 生存している b は戻っている
       const [restored] = await handle.db.select().from(tasks).where(eq(tasks.id, b.id));
       expect(restored).toMatchObject({ startDate: "2026-08-04", endDate: "2026-08-06" });
+    });
+
+    it("逆転した子を持つサマリーがあっても、正常なタスクのドラッグは通る", async () => {
+      // サマリーの日付は子から導出されるため、子が1件でも逆転していると
+      // 再集計結果（after）が逆転する。実測: before 2026-08-01〜08-20 が
+      // after 2026-08-13〜07-16 になる。`result.changes` 全体を見て弾く実装だと、
+      // この巻き添えで正常な操作まで拒否されていた（Cursor Bugbot の指摘）。
+      state.session = SESSION;
+      const { project, a } = await setupProjectWithChain();
+      const [summary] = await handle.db
+        .insert(tasks)
+        .values({
+          projectId: project.id,
+          title: "S",
+          type: "summary",
+          startDate: "2026-08-01",
+          endDate: "2026-08-20",
+        })
+        .returning();
+      if (!summary) throw new Error("unreachable");
+      // 逆転した子（旧バグで書き込まれたデータを模す）を summary 配下に置き、
+      // a からの依存で動くようにする
+      const [child] = await handle.db
+        .insert(tasks)
+        .values({
+          projectId: project.id,
+          parentId: summary.id,
+          title: "C",
+          startDate: "2026-08-10",
+          endDate: "2026-07-13",
+        })
+        .returning();
+      if (!child) throw new Error("unreachable");
+      await handle.db
+        .insert(taskDependencies)
+        .values({ projectId: project.id, predecessorId: a.id, successorId: child.id });
+
+      const result = await moveTaskAction(projectId, a.id, 3, false);
+
+      expect(result.ok).toBe(true);
     });
 
     it("既に日付が逆転している行があっても、正常なタスクのドラッグは通る", async () => {
