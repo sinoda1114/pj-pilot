@@ -26,6 +26,13 @@ export function proxy(request: NextRequest) {
   return NextResponse.next();
 }
 
+/**
+ * 保護対象のパス。**ログインが要る画面を追加したら必ずここにも足すこと。**
+ * 漏らしてもデータは出ない（ページ側の `requireLogin` が例外を投げる）が、
+ * 利用者にはログイン導線ではなく汎用エラー画面が出る。実際に Phase 2 で
+ * 追加した `/dashboard` がここから漏れていた。`e2e/auth-redirect.spec.ts` が
+ * 一覧を突き合わせているので、足し忘れると E2E が落ちる。
+ */
 export const config = {
-  matcher: ["/projects/:path*"],
+  matcher: ["/projects/:path*", "/dashboard/:path*"],
 };

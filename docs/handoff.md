@@ -10,16 +10,18 @@
 
 ## 現在地
 
-新規プロダクト pj-pilot（チーム向けの総合プロジェクト管理ツール）。
-調査・ヒアリング・リポジトリ立ち上げまで完了。アプリケーションコードは未着手。
+pj-pilot（チーム向けの総合プロジェクト管理ツール）。**実装は Phase 2 まで完了**。
 
 済んでいること:
 
-- **OSS調査** — React向け Gantt ライブラリ13種＋商用4種、セルフホスト型の完成品 OSS PM ツール11種を比較
-- **ヒアリング** — スタック、機能範囲、Gantt 依存連動の仕様、タスク属性を確定（計13問）
-- **リポジトリ作成** — GitHub Public、MIT、`main`、初回コミット `f436fcc`
+- **OSS調査・ヒアリング・リポジトリ立ち上げ** — スタック・機能範囲・Gantt 依存連動の仕様を確定（再実行しない）
+- **Phase 1（M0〜M6）** — 足場 / DB / プロジェクト・タスク CRUD / WBS / Gantt（依存伝播・Undo・連動ON/OFF・ピン留め）/ 仕上げ
+- **Better Auth 本実装** — Google OAuth 限定・`ALLOWED_EMAIL_DOMAINS` によるドメイン制限（PR #33、`docs/IMPLEMENTATION_PLAN.md` R-11）
+- **Phase 2（M7〜M9）** — カンバンボード / ダッシュボード / CSV エクスポート（PR #42〜#46、`docs/PHASE2_IMPLEMENTATION_PLAN.md`）
 
-ヒアリングは実施済み。要件は固まっているので再実行しない。
+残っているのは**外部サービス側のセットアップのみ**（Issue #4: GitHub ラベル・Project 板・
+Secret scanning、Issue #5: Vercel・Turso・Google OAuth）。いずれもローカル作業
+（詳細は `docs/LOCAL_SETUP.md`）。
 
 ## 確定した仕様
 
@@ -36,13 +38,14 @@ REQUIREMENTS.md に入っているもの:
 
 ## 次にやること
 
-1. **`/project-bootstrap`** — 残りの立ち上げ。GitHub Project 作成、Vercel 連携、プロジェクト固有 `CLAUDE.md` の配置
-2. **`/plan`** — 実装計画。スキーマ案、画面構成、実装手順、リスク、ロールバック方針
-3. **実装着手（TDD）**
+1. **Issue #4 / #5 のローカル作業** — GitHub 初期セットアップとデプロイ基盤（Vercel / Turso /
+   Google OAuth）。手順は `docs/LOCAL_SETUP.md` が正本
+2. **デプロイ後の本番動作確認** — 実 Google アカウントでのログイン・ドメイン制限・Cron 物理削除
+3. **Phase 3 の計画** — 着手する場合は Phase 2 と同様に実装計画書を先に作る
 
-`/project-bootstrap` は GitHub Project 作成や Vercel 連携といった外部影響のある操作を含む。
-**実行前に何をするか宣言すること。** リポジトリ本体・`type:*` ラベル・`origin/HEAD` は作成済みなので、
-先に現状を確認して重複作成しないこと。
+注意: `type:*` ラベルは **2026-08-06 時点で未作成**（`docs/handoff.md` の旧版に「作成済み」と
+あったが実態と異なった。Issue #4 参照）。`origin/HEAD` はリポジトリ設定ではなく clone ごとの
+ローカル参照なので、新しい clone では `git remote set-head origin -a` を都度実行する。
 
 ## 守るべき手続き
 
@@ -57,9 +60,11 @@ DB スキーマはコミット前にユーザーへ差分を提示して承認�
 
 push 前のゲート:
 
-1. `/ai-review` — 未コミット差分の二重レビュー
+1. `/ai-review`（ローカル）または `/code-review`（クラウドセッション。Codex CLI が無いため） —
+   差分のレビュー
 2. コミット
-3. `/security-review` — ブランチ全体のセキュリティ深掘り
+3. `/security-review` — ブランチ全体のセキュリティ深掘り（`origin/HEAD` が必要。
+   新しい clone では先に `git remote set-head origin -a`）
 
 ## 技術上の注意点
 
@@ -100,15 +105,17 @@ claude.ai/code のセッションは隔離されたコンテナで動く。ロ�
 
 | 項目 | 理由 |
 |---|---|
-| Vercel 連携・デプロイ | ダッシュボード操作が必要 |
-| ブラウザでの動作確認 | ローカルで行う |
+| Vercel / Turso / Google Cloud Console の操作 | egress ポリシーが該当ホストへの通信を遮断（実測で確認）。CLI・認証情報も無い |
 | GitHub Project の作成 | Projects v2 の MCP ツールが無く、`gh` CLI も入っていない |
+| GitHub ラベルの作成 | MCP サーバーに作成ツールが無い |
 | `~/dev/claude-kit` 等ローカル資産の参照 | ファイルシステムが別 |
 
 したがって **`/project-bootstrap` はローカルで実行する。** クラウドは PR 作成までが範囲。
 
-**向いていること:** 依存連動のギャップ維持型伝播ロジック。UI もブラウザ確認も不要で、
-テストだけで正しさを検証できる。設計リスクが最も高い部分でもある。
+なお**ブラウザでの動作確認はクラウドでも可能**（Chromium 同梱。Playwright の E2E・
+スクリーンショット取得とも実績あり。バージョン不一致時は
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/pw-browsers/chromium` を指定する）。
+E2E の書き方は `e2e/README.md` の規約に従う。
 
 **前提:** スキルと `CLAUDE.md` が push 済みであること。セッション開始後にファイルを追加しても
 認識されない。`kit-ping` で読み込み状態を確認できる。
