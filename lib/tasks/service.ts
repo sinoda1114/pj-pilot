@@ -11,7 +11,13 @@ import type { LibSQLDatabase } from "drizzle-orm/libsql";
 import { requireLogin } from "../auth/authz";
 import type { AuthSession } from "../auth/types";
 import { diffInCalendarDays, isValidDateOnly } from "../dates/date-only";
-import { getActiveProject, getActiveTask, listActiveTasksByProject } from "../db/queries";
+import {
+  getActiveProject,
+  getActiveTask,
+  listActiveBoardTasksByProject,
+  listActiveTasksByProject,
+  type Db,
+} from "../db/queries";
 import { tasks } from "../db/schema";
 import type * as schema from "../db/schema";
 import { NotFoundError, ValidationError } from "../errors";
@@ -124,6 +130,29 @@ export async function getTask(
   return task;
 }
 
+/**
+ * 指定した status 列の末尾に置くための `board_order` を返す（列が空なら 0）。
+ *
+ * **件数ではなく `max + 1`** を使う。列の `board_order` は必ずしも 0..n-1 に
+ * 整っていないため（Drawer でステータスを変えると移動元の値をそのまま持ち込むので、
+ * 件数より大きい値が残ることがある）、件数で採番すると既存行の前に割り込む。
+ * 実測: `board_order = 7` の行が1件ある列に追加すると、件数方式では 1 になり
+ * 新しいタスクが既存行より前に表示される。
+ *
+ * `listActiveBoardTasksByProject` は `type='task'` の生存タスクだけを返すので、
+ * 削除済み・サマリー・マイルストーンは採番に影響しない（カンバンに出ないため）。
+ *
+ * 呼び出し元（`createTask`）のトランザクション内で使う前提。libSQL は書き込み
+ * トランザクションを直列化するため、採番と INSERT の間に別リクエストが割り込んで
+ * 同じ値が2件出ることはない。
+ */
+async function nextBoardOrder(db: Db, projectId: string, status: string): Promise<number> {
+  const boardTasks = await listActiveBoardTasksByProject(db, projectId);
+  return boardTasks
+    .filter((row) => row.status === status)
+    .reduce((max, row) => Math.max(max, row.boardOrder + 1), 0);
+}
+
 export async function createTask(
   db: LibSQLDatabase<typeof schema>,
   session: AuthSession | null,
@@ -132,41 +161,59 @@ export async function createTask(
 ) {
   requireLogin(session);
 
-  const project = await getActiveProject(db, projectId);
-  if (!project) {
-    throw new NotFoundError("プロジェクトが見つかりません");
-  }
-
-  assertValidDateRange(input.startDate, input.endDate);
-
-  if (input.parentId) {
-    const parent = await getActiveTask(db, input.parentId);
-    if (!parent) {
-      throw new NotFoundError("親タスクが見つかりません");
+  // 検証（PJ・親タスクの生存、board_order の採番）と INSERT を1つのトランザクションに
+  // まとめる。分けたままだと、親の生存を確認したあと INSERT するまでの間に別リクエストが
+  // その親を論理削除でき、「アクティブな子を持つ削除済みタスク」という不変条件違反が
+  // 生まれる（`lib/tasks/deletion.ts` の `deleteTask` は子が居れば拒否するが、
+  // その判定より後に子が INSERT されると擦り抜ける）。`deleteTask` / `indentTask` /
+  // `createDependency` と同じ TOCTOU 対策。
+  return db.transaction(async (tx) => {
+    const project = await getActiveProject(tx, projectId);
+    if (!project) {
+      throw new NotFoundError("プロジェクトが見つかりません");
     }
-    if (parent.projectId !== projectId) {
-      throw new ValidationError("親タスクは同じプロジェクト内である必要があります");
+
+    // 検証の順序は変えない。日付チェックを PJ チェックより先に出すと、削除済み PJ への
+    // 作成で「日付が不正」と言われ、日付を直して再送すると今度は「PJ が無い」と言われる
+    // ことになり、利用者に2往復させてしまう（/code-review の指摘）。
+    assertValidDateRange(input.startDate, input.endDate);
+
+    if (input.parentId) {
+      const parent = await getActiveTask(tx, input.parentId);
+      if (!parent) {
+        throw new NotFoundError("親タスクが見つかりません");
+      }
+      if (parent.projectId !== projectId) {
+        throw new ValidationError("親タスクは同じプロジェクト内である必要があります");
+      }
     }
-  }
 
-  const [task] = await db
-    .insert(tasks)
-    .values({
-      ...pickEditableTaskFields(input),
-      // 必須列は CreateTaskInput の型で保証されているのを明示的にも保つ
-      // （pickEditableTaskFields の戻り値は update 側と共通化するため Partial 型）。
-      title: input.title,
-      startDate: input.startDate,
-      endDate: input.endDate,
-      projectId,
-    })
-    .returning();
+    const [task] = await tx
+      .insert(tasks)
+      .values({
+        // `boardOrder` 未指定なら、移動先の列の末尾に採番する。
+        // 既定値 0 のままだと、画面から作ったタスクが全て 0 になり
+        //   - カンバンの初期表示順が id（cuid2。作成順ではない）依存になる
+        //   - `board_order` が正規化されず、並び替えの前提が最初から崩れる（Issue #55）
+        // の2つが起きる。`pickEditableTaskFields` より前に置いて、明示指定があれば
+        // そちらで上書きされるようにする。
+        boardOrder: await nextBoardOrder(tx, projectId, input.status ?? "todo"),
+        ...pickEditableTaskFields(input),
+        // 必須列は CreateTaskInput の型で保証されているのを明示的にも保つ
+        // （pickEditableTaskFields の戻り値は update 側と共通化するため Partial 型）。
+        title: input.title,
+        startDate: input.startDate,
+        endDate: input.endDate,
+        projectId,
+      })
+      .returning();
 
-  if (!task) {
-    throw new Error("タスクの作成に失敗しました");
-  }
+    if (!task) {
+      throw new Error("タスクの作成に失敗しました");
+    }
 
-  return task;
+    return task;
+  });
 }
 
 export async function updateTask(

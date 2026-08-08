@@ -109,25 +109,26 @@ export async function moveTaskOnBoard(
     const boardTasks = await listActiveBoardTasksByProject(tx, projectId);
     const idsIn = (status: string) =>
       boardTasks.filter((row) => row.status === status).map((row) => row.id);
+    // 「実際に変化した行だけ UPDATE する」判定に使う現在値のスナップショット。
+    const current = new Map<string, CurrentRow>(
+      boardTasks.map((row) => [row.id, { boardOrder: row.boardOrder, status: row.status }]),
+    );
 
     if (fromStatus === toStatus) {
-      const before = idsIn(fromStatus);
-      const after = reorderWithinColumn(before, taskId, toIndex);
-      await persistColumnOrder(tx, before, after, null);
+      const after = reorderWithinColumn(idsIn(fromStatus), taskId, toIndex);
+      await persistColumnOrder(tx, current, after, null);
       return;
     }
 
-    const beforeFrom = idsIn(fromStatus);
-    const beforeTo = idsIn(toStatus);
     const { from: afterFrom, to: afterTo } = moveAcrossColumns(
-      beforeFrom,
-      beforeTo,
+      idsIn(fromStatus),
+      idsIn(toStatus),
       taskId,
       toIndex,
     );
 
-    await persistColumnOrder(tx, beforeFrom, afterFrom, null);
-    await persistColumnOrder(tx, beforeTo, afterTo, toStatus);
+    await persistColumnOrder(tx, current, afterFrom, null);
+    await persistColumnOrder(tx, current, afterTo, toStatus);
   });
 }
 
@@ -154,29 +155,45 @@ async function findBoardTask(tx: Db, projectId: string, taskId: string) {
   return task;
 }
 
+/** `persistColumnOrder` が「この行は書き換えが要るか」を判断するための現在値。 */
+type CurrentRow = { boardOrder: number; status: string };
+
 /**
- * 列の並びを永続化する。`before` と `after` を突き合わせ、**実際に変化した行だけ**
- * UPDATE する（同じ値の書き込みで `updated_at` が無駄に進むのを防ぐ）。
+ * 列の並びを永続化する。`after` の**添字がそのまま新しい `board_order`** になる
+ * （完全リインデックス方式。決定 P2-05）。
  *
- * `status` に値を渡すと board_order と併せて status も更新する（列をまたぐ移動のとき）。
+ * 書き換えの要否は **DB に入っている実際の `board_order` / `status` と突き合わせて**
+ * 判断する。同じ値の UPDATE を避けて `updated_at` が無駄に進まないようにするためだが、
+ * 「並び順の配列と添字を比べる」方式にしてはいけない。それは
+ * **DB が既に 0..n-1 に正規化されている**ことを暗黙の前提にしており、次のように
+ * 前提が崩れるとリインデックスが中途半端に終わって並びが壊れるため（Issue #55）。
+ *
+ *   - `createTask` は `board_order` を採番しないので、画面から作ったタスクは全て 0
+ *   - 削除しても残りの列は詰め直されず、復元時にも再計算されない（重複・欠番）
+ *   - Drawer でステータスを変えると、移動元列での値をそのまま移動先へ持ち込む
+ *
+ * 実測では、全て 0 の列で2番目の位置へドラッグすると、画面は `B,C,A,D` を見せるのに
+ * 保存後は `B,A,D,C` になり、掴んだカードが列の末尾へ飛んでいた。
+ * 現在値と比較する方式なら、そうした壊れた状態も次の操作で 0..n-1 に自己修復する。
  */
 async function persistColumnOrder(
   tx: Db,
-  before: readonly string[],
+  current: ReadonlyMap<string, CurrentRow>,
   after: readonly string[],
   status: BoardStatus | null,
 ): Promise<void> {
   for (const [index, id] of after.entries()) {
-    const movedWithinColumn = before[index] !== id;
-    const changesStatus = status !== null && !before.includes(id);
+    const row = current.get(id);
+    const needsOrder = row === undefined || row.boardOrder !== index;
+    const needsStatus = status !== null && row?.status !== status;
 
-    if (!movedWithinColumn && !changesStatus) {
+    if (!needsOrder && !needsStatus) {
       continue;
     }
 
     await tx
       .update(tasks)
-      .set(status !== null && changesStatus ? { boardOrder: index, status } : { boardOrder: index })
+      .set(needsStatus ? { boardOrder: index, status } : { boardOrder: index })
       .where(eq(tasks.id, id));
   }
 }

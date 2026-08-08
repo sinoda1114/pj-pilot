@@ -50,6 +50,88 @@ describe("tasks/service", () => {
       ).rejects.toThrow(UnauthorizedError);
     });
 
+    /**
+     * Issue #55: 画面の「新規タスク作成」は `boardOrder` を渡さないため、
+     * 採番しないと全タスクが既定値 0 のまま作られる。すると
+     *   - カンバンの初期表示順が id（cuid2）依存になり、作成順にならない
+     *   - `board_order` の正規化が崩れ、並び替えの前提が最初から成立しない
+     * の2つが起きる。移動先の列の末尾に採番する。
+     */
+    it("boardOrder を指定しない場合、同じ status 列の末尾に採番される", async () => {
+      const first = await createTask(handle.db, SESSION, projectId, {
+        title: "1件目",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      const second = await createTask(handle.db, SESSION, projectId, {
+        title: "2件目",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      // 別の列は独立して 0 から始まる
+      const done = await createTask(handle.db, SESSION, projectId, {
+        title: "完了列の1件目",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        status: "done",
+      });
+
+      expect(first.boardOrder).toBe(0);
+      expect(second.boardOrder).toBe(1);
+      expect(done.boardOrder).toBe(0);
+    });
+
+    it("採番は生存しているタスクだけを見る（削除済みは詰める）", async () => {
+      const a = await createTask(handle.db, SESSION, projectId, {
+        title: "A",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      await handle.db.update(tasks).set({ deletedAt: new Date() }).where(eq(tasks.id, a.id));
+
+      const next = await createTask(handle.db, SESSION, projectId, {
+        title: "B",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+
+      expect(next.boardOrder).toBe(0);
+    });
+
+    it("列に欠番や大きい値があっても、必ず末尾に採番される", async () => {
+      // Drawer でステータスを変えると board_order は移動元の値のまま持ち込まれるため、
+      // 列の中に「件数より大きい値」が残ることがある。件数で採番すると既存行の前に
+      // 割り込んでしまう。
+      await handle.db.insert(tasks).values({
+        projectId,
+        title: "既存",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        status: "done",
+        boardOrder: 7,
+      });
+
+      const created = await createTask(handle.db, SESSION, projectId, {
+        title: "新規",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        status: "done",
+      });
+
+      expect(created.boardOrder).toBe(8);
+    });
+
+    it("boardOrder を明示的に渡した場合はその値を使う", async () => {
+      const task = await createTask(handle.db, SESSION, projectId, {
+        title: "T",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        boardOrder: 7,
+      });
+
+      expect(task.boardOrder).toBe(7);
+    });
+
     it("存在しないプロジェクトは NotFoundError を投げる", async () => {
       await expect(
         createTask(handle.db, SESSION, "nonexistent-project", {
