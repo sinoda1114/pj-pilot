@@ -644,3 +644,91 @@ describe("aggregateSummaryValues: 境界値（Devin Review指摘の反映）", (
     expect(result.progress).toBe(1);
   });
 });
+
+describe("moveTask: 同一タスクが「Δシフト対象」と「変更された子の祖先」を兼ねる場合", () => {
+  /**
+   * サマリー P（子 C1・C2）と、P・C1 の両方に依存を張った X を用意する。
+   * X を動かすと P は「依存の後続」として Δ シフトされ、同時に「動いた C1 の祖先」
+   * としても再集計対象になる。この二役が重なるケースを固定する。
+   *
+   * 依存の作成側（`lib/dependencies/service.ts`）は自己参照・別プロジェクト・重複・
+   * 循環しか弾かないため、「サマリーとその子の両方に依存を張る」構成は実際に作れる。
+   */
+  function buildOverlapCase() {
+    const tasks = [
+      task({ id: "X", startDate: "2026-01-01", endDate: "2026-01-05" }),
+      task({
+        id: "P",
+        type: "summary",
+        startDate: "2026-02-01",
+        endDate: "2026-02-20",
+      }),
+      task({ id: "C1", parentId: "P", startDate: "2026-02-01", endDate: "2026-02-10" }),
+      task({ id: "C2", parentId: "P", startDate: "2026-02-11", endDate: "2026-02-20" }),
+    ];
+    return moveTask({
+      taskId: "X",
+      deltaDays: 3,
+      tasks,
+      dependencies: [dep("X", "P"), dep("X", "C1")],
+      dependencySyncEnabled: true,
+    });
+  }
+
+  it("changes に同じタスクが二重に現れない", () => {
+    // 二重に入ると `persistPropagateResult` が同じ行を2回 UPDATE し（後勝ち）、
+    // トーストの「N件のタスクを移動しました」も水増しされる。
+    // 動くのは X（操作対象）・C1（依存の後続）・P（C1 の親サマリー）の3件。
+    // C2 は依存も無く親でもないので変わらない。
+    const result = buildOverlapCase();
+
+    expect(result.changes.map((c) => c.id).sort()).toEqual(["C1", "P", "X"]);
+  });
+
+  it("before は「操作前の値」のまま保たれる（Undo が元の日付に戻せる）", () => {
+    // ここが崩れると Undo が壊れる。`GanttView` は `changes[].before` をそのまま
+    // Undo の payload にし、`persistPropagateResult` が配列順に UPDATE を流すため、
+    // 同一 id の2件目（before にシフト後の値が入ったもの）が後勝ちして、
+    // 「元に戻す」を押しても元の日付に戻らなくなる。
+    const result = buildOverlapCase();
+    const p = result.changes.find((c) => c.id === "P");
+
+    expect(p?.before).toEqual({ startDate: "2026-02-01", endDate: "2026-02-20" });
+  });
+
+  it("再集計で元の位置に戻る場合でも、操作対象は changes に残る", () => {
+    // P（summary）を +3 ドラッグすると、依存の後続 C1 が動き、その結果 P は
+    // 子から再集計されて**元の範囲に戻る**（C2 が動かないため min/max が変わらない）。
+    // このとき `before === after` になるが、ここで changes から落としてはいけない。
+    // `GanttView` は changes をループして SVAR の楽観更新をリコンサイルしているため、
+    // 落とすとバーは +3 された位置に残り、DB は元の位置、という不整合になる。
+    const tasks = [
+      task({ id: "P", type: "summary", startDate: "2026-02-01", endDate: "2026-02-20" }),
+      task({ id: "C1", parentId: "P", startDate: "2026-02-05", endDate: "2026-02-08" }),
+      task({ id: "C2", parentId: "P", startDate: "2026-02-01", endDate: "2026-02-20" }),
+    ];
+    const result = moveTask({
+      taskId: "P",
+      deltaDays: 3,
+      tasks,
+      dependencies: [dep("P", "C1")],
+      dependencySyncEnabled: true,
+    });
+
+    expect(result.changes.find((c) => c.id === "P")).toEqual({
+      id: "P",
+      before: { startDate: "2026-02-01", endDate: "2026-02-20" },
+      after: { startDate: "2026-02-01", endDate: "2026-02-20" },
+    });
+  });
+
+  it("after は子から再集計した結果になる（サマリーの日付は子が正）", () => {
+    // C1 は Δ シフトされて 02-04〜02-13、C2 は動かないので 02-11〜02-20。
+    // サマリー P は min(start)/max(end) = 02-04〜02-20 でなければならない。
+    // Δ を素朴に足した 02-04〜02-23 だと、子より後ろに伸びた状態になる。
+    const result = buildOverlapCase();
+    const p = result.changes.find((c) => c.id === "P");
+
+    expect(p?.after).toEqual({ startDate: "2026-02-04", endDate: "2026-02-20" });
+  });
+});
