@@ -17,7 +17,12 @@ concurrency:
 permissions:
   contents: read
 
+# `secrets: inherit` は付けない（Amazon Q の指摘を検証して採用）。
+# 呼び出し先の node-ci.yml は `secrets.*` を一切参照しておらず（実物を確認済み）、
+# CIに必要な値は非シークレットの .github/ci.env から供給される。
+# inherit を付けると使いもしないワークフローへ全シークレット（Turso のトークン等）が
+# 渡るだけなので、最小権限のため外す。呼び出し先が将来シークレットを必要としたら、
+# inherit ではなく `secrets:` マップで必要なものだけを明示的に渡すこと。
 jobs:
   ci:
     uses: sinoda1114/ci-standard/.github/workflows/node-ci.yml@main
-    secrets: inherit
