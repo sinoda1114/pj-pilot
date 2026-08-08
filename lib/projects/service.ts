@@ -171,7 +171,22 @@ export async function restoreProject(
     // ここで削除済みであることを確認したうえで owner 判定を通す。
     await requireProjectOwner(tx, authed, projectId);
 
-    await tx.update(projects).set({ deletedAt: null }).where(eq(projects.id, projectId));
+    // `.returning()` で実際に更新できたことまで確認する。
+    //
+    // 直前の SELECT と owner 判定を通っていても、その間に 30 日経過ぶんの物理削除（cron）が
+    // 割り込んで行が消えていれば UPDATE は 0 行になる。`.returning()` を付けずに投げっぱなしに
+    // すると、何も復元していないのに「復元しました」と出せてしまう（Cursor Bugbot 指摘）。
+    // ローカルのファイル DB では SQLite が競合を検出して例外にする可能性が高いが、本番の
+    // Turso（HTTP 接続）でも同じ保証があるとは限らないため、結果を見て判断する。
+    const restored = await tx
+      .update(projects)
+      .set({ deletedAt: null })
+      .where(and(eq(projects.id, projectId), isNotNull(projects.deletedAt)))
+      .returning({ id: projects.id });
+
+    if (restored.length === 0) {
+      throw new NotFoundError("削除済みのプロジェクトが見つかりません");
+    }
   });
 }
 
