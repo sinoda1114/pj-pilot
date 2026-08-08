@@ -53,9 +53,16 @@ const CSV_TIME_ZONE = "Asia/Tokyo";
 const ASSIGNEE_SEPARATOR = " / ";
 
 /**
- * CSV の列定義。画面の列（タイトル/ステータス/優先度/担当者/開始日/終了日/進捗）と
- * 同じ内容を出す。ステータス・優先度は DB の英字 enum ではなく `lib/labels.ts` の
- * 日本語ラベルで出力する（決定 D-17〜D-19: 画面に DB 値を出さない方針を CSV にも通す）。
+ * CSV の列定義。
+ *
+ * **並び順は下の DataTable の列と一致させること。** 画面で見えている表をそのまま
+ * ファイルに落とすのが本機能の趣旨で、順序が違うと突き合わせのときに読み替えが要る
+ * （Cursor Bugbot の指摘。担当者が末尾に来ていて画面と食い違っていた）。
+ * 列を足す・順を変えるときは、DataTable 側と両方を直すこと。E2E がヘッダー行を
+ * 文字列比較しているので、片方だけ直すと検知される。
+ *
+ * ステータス・優先度は DB の英字 enum ではなく `lib/labels.ts` の日本語ラベルで
+ * 出力する（決定 D-17〜D-19: 画面に DB 値を出さない方針を CSV にも通す）。
  *
  * 進捗は `50%` ではなく `50` を出す。Excel や後段の集計で数値として扱えるようにするため。
  */
@@ -64,13 +71,13 @@ function buildTaskCsvColumns(assigneesByTaskId: Record<string, string[]>): CsvCo
     { header: "タイトル", value: (task) => task.title },
     { header: "ステータス", value: (task) => statusLabel(task.status) },
     { header: "優先度", value: (task) => priorityLabel(task.priority) },
-    { header: "開始日", value: (task) => task.startDate },
-    { header: "終了日", value: (task) => task.endDate },
-    { header: "進捗", value: (task) => task.progress },
     {
       header: "担当者",
       value: (task) => (assigneesByTaskId[task.id] ?? []).join(ASSIGNEE_SEPARATOR),
     },
+    { header: "開始日", value: (task) => task.startDate },
+    { header: "終了日", value: (task) => task.endDate },
+    { header: "進捗", value: (task) => task.progress },
   ];
 }
 

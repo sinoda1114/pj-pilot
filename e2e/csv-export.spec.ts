@@ -24,6 +24,14 @@ let session: Awaited<ReturnType<typeof createTestUser>>;
 let handle: DbHandle;
 let projectId: string;
 let projectName: string;
+/**
+ * 期限超過タスクのタイトル。**実行ごとに一意**にする。
+ *
+ * ダッシュボードは全プロジェクト横断なので、リトライで beforeAll が再実行されると
+ * 同名タスクが複数プロジェクトに並び、`lines.find()` が別実行の行を拾ってしまう
+ * （CI で実際に踏んだ。1回目の実行のプロジェクト名と照合して失敗した）。
+ */
+let overdueTaskTitle: string;
 
 /** JST の今日。ファイル名の日付検証に使う（サーバーは UTC 稼働なので JST で求める）。 */
 const todayInJst = new Intl.DateTimeFormat("en-CA", {
@@ -46,7 +54,9 @@ test.beforeAll(async () => {
   const resolvedUrl = process.env.TURSO_DATABASE_URL ?? "file:local.db";
   handle = createDb(resolvedUrl);
 
-  projectName = `E2E CSV検証用 ${Date.now()}`;
+  const runId = Date.now();
+  projectName = `E2E CSV検証用 ${runId}`;
+  overdueTaskTitle = `CSV期限超過タスク-${runId}`;
   const project = await createProject(handle.db, { userId: session.userId }, { name: projectName });
   projectId = project.id;
 
@@ -70,7 +80,7 @@ test.beforeAll(async () => {
   });
   // 期限を大きく過ぎた未完了タスク（ダッシュボードの期限超過一覧に出る）
   await createTask(handle.db, { userId: session.userId }, projectId, {
-    title: "CSV期限超過タスク",
+    title: overdueTaskTitle,
     startDate: "2020-01-01",
     endDate: "2020-01-05",
     status: "review",
@@ -104,22 +114,27 @@ test("タスク一覧の CSV に日本語ラベルと BOM が入り、RFC 4180 �
   expect(content.startsWith(UTF8_BOM)).toBe(true);
 
   const lines = content.slice(UTF8_BOM.length).split("\r\n");
-  expect(lines[0]).toBe("タイトル,ステータス,優先度,開始日,終了日,進捗,担当者");
+  // 列順は画面の DataTable と一致していること（担当者は優先度の直後）。
+  // ここを文字列で固定しているので、片方だけ順序を変えると必ず落ちる。
+  expect(lines[0]).toBe("タイトル,ステータス,優先度,担当者,開始日,終了日,進捗");
 
   // DB の enum 値ではなく画面と同じ日本語ラベルで出ていること
-  expect(content).toContain("CSV通常タスク,未着手,高,2026-08-01,2026-08-05,30,");
+  expect(content).toContain("CSV通常タスク,未着手,高,,2026-08-01,2026-08-05,30");
   expect(content).not.toContain("todo");
   expect(content).not.toContain("in_progress");
 
   // カンマ・ダブルクォートを含むタイトルは囲みとダブルクォートの二重化が行われること
-  expect(content).toContain('"CSV""引用"",カンマ入り",対応中,緊急,2026-08-02,2026-08-06,50,');
+  expect(content).toContain('"CSV""引用"",カンマ入り",対応中,緊急,,2026-08-02,2026-08-06,50');
 });
 
 test("フィルターを適用すると、表示されている行だけが CSV に出る", async ({ page }) => {
   await page.goto(`/projects/${projectId}/tasks`);
 
   // ステータスを「対応中」に絞り込む
-  await page.getByLabel("ステータス").click();
+  // getByLabel は使わない。Mantine の Select は展開後の listbox にも
+  // aria-labelledby でラベルが紐づき、入力欄と2要素に一致して strict mode violation
+  // になる（CI で実際に踏んだ。ローカルでは開閉のタイミング差で顕在化しなかった）。
+  await page.getByRole("combobox", { name: "ステータス" }).click();
   await page.getByRole("option", { name: "対応中" }).click();
   await expect(page.getByText("CSV通常タスク", { exact: true })).toHaveCount(0);
 
@@ -161,7 +176,7 @@ test("ダッシュボードの期限超過一覧を CSV でダウンロードで
   // このテストが作った期限超過タスクの行が、日本語ラベル付きで入っていること。
   // ダッシュボードは全プロジェクト横断なので、他スペックのデータも混ざる前提で
   // 「自分の行があること」だけを見る（実行順に依存させない）。
-  const targetLine = lines.find((line) => line.includes("CSV期限超過タスク"));
+  const targetLine = lines.find((line) => line.includes(overdueTaskTitle));
   expect(targetLine).toBeDefined();
   expect(targetLine).toContain(projectName);
   expect(targetLine).toContain("確認中");
