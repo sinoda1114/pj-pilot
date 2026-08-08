@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { moveTask, resizeTaskEnd, wouldCreateCycle } from "./propagate";
+import {
+  aggregateSummaryValues,
+  moveTask,
+  resizeTaskEnd,
+  wouldCreateCycle,
+} from "./propagate";
 import type { Dependency, ScheduleTask } from "./types";
 
 /** テスト用のタスクを簡潔に組み立てるヘルパー。指定しない項目は無害な既定値にする。 */
@@ -480,5 +485,42 @@ describe("moveTask: 不整合データへの防御", () => {
         dependencySyncEnabled: true,
       }),
     ).not.toThrow();
+  });
+});
+
+describe("aggregateSummaryValues", () => {
+  it("子が空なら progress 0・工数 0 を返す", () => {
+    expect(aggregateSummaryValues([])).toEqual({
+      progress: 0,
+      estimatedHours: 0,
+      actualHours: 0,
+    });
+  });
+
+  it("estimatedHours が null の子は集計 0・加重 1 として扱う", () => {
+    // 見積無し(null)の子2件: 工数合計には入らないが、進捗は均等加重で平均される
+    const result = aggregateSummaryValues([
+      { progress: 100, estimatedHours: null, actualHours: null },
+      { progress: 0, estimatedHours: null, actualHours: null },
+    ]);
+    expect(result).toEqual({ progress: 50, estimatedHours: 0, actualHours: 0 });
+  });
+
+  it("進捗は見積工数による加重平均を四捨五入する", () => {
+    // (100*3 + 0*1) / (3+1) = 75
+    const result = aggregateSummaryValues([
+      { progress: 100, estimatedHours: 3, actualHours: 2 },
+      { progress: 0, estimatedHours: 1, actualHours: null },
+    ]);
+    expect(result).toEqual({ progress: 75, estimatedHours: 4, actualHours: 2 });
+  });
+
+  it("小数になる加重平均は Math.round で丸める", () => {
+    // (50*1 + 100*2) / 3 = 83.33... → 83
+    const result = aggregateSummaryValues([
+      { progress: 50, estimatedHours: 1, actualHours: null },
+      { progress: 100, estimatedHours: 2, actualHours: null },
+    ]);
+    expect(result.progress).toBe(83);
   });
 });
