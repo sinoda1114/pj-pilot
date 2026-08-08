@@ -14,6 +14,7 @@ import { useState } from "react";
 import { BOARD_STATUSES, type BoardStatus } from "../../lib/board/service";
 import type { DashboardData, OverdueTaskRow } from "../../lib/dashboard/service";
 import { buildCsvFileName, toCsv, withUtf8Bom, type CsvColumn } from "../../lib/export/csv";
+import { downloadCsvFile } from "../../lib/export/csv-download";
 import { statusLabel } from "../../lib/labels";
 
 /** ステータスの色。カンバン（BoardClient）と揃える。 */
@@ -50,28 +51,6 @@ const OVERDUE_CSV_COLUMNS: CsvColumn<OverdueTaskRow>[] = [
   { header: "ステータス", value: (task) => statusLabel(task.status) },
   { header: "終了日", value: (task) => task.endDate },
 ];
-
-/**
- * CSV 文字列をファイルとしてダウンロードさせる。
- *
- * 集計済みのデータがすでにクライアントにあるため、専用の API エンドポイントは作らず
- * Blob と `URL.createObjectURL` で完結させる。生成した object URL は必ず
- * `revokeObjectURL` で解放する。解放を次のイベントループに回しているのは、
- * `click()` の直後に同期的に解放するとブラウザによってはダウンロード開始前に
- * URL が無効化されうるため。アンカーを一度 DOM に挿入するのは、切り離した要素の
- * `click()` を無視するブラウザ（Firefox）があるため。
- */
-function downloadCsvFile(fileName: string, csv: string): void {
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
-}
 
 export function DashboardClient({ data, today }: { data: DashboardData; today: string }) {
   const { statusCounts, overdueTasks, projectProgress } = data;

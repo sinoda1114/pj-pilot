@@ -18,6 +18,7 @@ import { useMemo, useState } from "react";
 import type { tasks } from "../../../../lib/db/schema";
 import { todayInTimeZone } from "../../../../lib/dates/date-only";
 import { buildCsvFileName, toCsv, withUtf8Bom, type CsvColumn } from "../../../../lib/export/csv";
+import { downloadCsvFile } from "../../../../lib/export/csv-download";
 import { priorityLabel, statusLabel } from "../../../../lib/labels";
 import { TaskDrawer } from "../../../../components/tasks/TaskDrawer";
 
@@ -79,29 +80,6 @@ function buildTaskCsvColumns(assigneesByTaskId: Record<string, string[]>): CsvCo
     { header: "終了日", value: (task) => task.endDate },
     { header: "進捗", value: (task) => task.progress },
   ];
-}
-
-/**
- * CSV 文字列をファイルとしてダウンロードさせる。
- *
- * 一覧のデータはすでにクライアント側にあるため、専用の API エンドポイントは作らず
- * Blob と `URL.createObjectURL` で完結させる（サーバーに同じ取得・整形処理を
- * 二重に持たせない）。生成した object URL は必ず `revokeObjectURL` で解放する。
- * 解放を次のイベントループに回しているのは、`click()` の直後に同期的に解放すると
- * ブラウザによってはダウンロード開始前に URL が無効化されうるため。
- * アンカーを一度 DOM に挿入するのは、切り離した要素の `click()` を無視する
- * ブラウザ（Firefox）があるため。
- */
-function downloadCsvFile(fileName: string, csv: string): void {
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 type DrawerState = { mode: "create" } | { mode: "edit"; task: Task };
