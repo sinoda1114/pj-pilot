@@ -40,9 +40,19 @@ PR #33で実際に動いた構成、および観測した具体的な事象。
 
 ---
 
-## 1. GitHubブランチ保護ルールの確認・設定（Web UIのみ、未実施）
+## 1. GitHubブランチ保護ルールの確認・設定 ✅ 設定済み（2026-08-08 に実地で確認）
 
-`Settings → Branches → Branch protection rules → main` で以下を確認・設定する。
+**下記1・2はいずれも既に設定されています。** 設定画面を見たのではなく、
+実際にマージを試みたときの GitHub のエラーがそのまま証拠になりました。
+
+| 項目 | 状態 | 根拠 |
+|---|---|---|
+| Require status checks（必須2件） | ✅ 設定済み | PR #36 のマージ時に `2 of 2 required status checks are expected` で拒否された |
+| Require conversation resolution | ✅ 設定済み | PR #38 のマージ時に `405 All comments must be resolved.` で拒否された |
+
+以降は設定内容の記録として残します。変更するときの参照用です。
+
+`Settings → Branches → Branch protection rules → main`:
 
 1. **Require status checks to pass before merging** を有効化し、必須チェックとして
    **`ci / build`・`ci / e2e`** の2ジョブを指定する。
@@ -88,8 +98,11 @@ PR #33で実際に動いた構成、および観測した具体的な事象。
 
 `vitest.config.ts` に `test.coverage`（provider: v8、statements / branches / functions / lines の
 しきい値）が定義済みで、CI の build ジョブが `npm run test:coverage` を実行しています。
-しきい値は実測値の少し下に置くラチェット方式（statements 85 / branches 75 / functions 85 /
-lines 85）で、カバレッジの退行だけを止める設定です。向上したら随時引き上げます。
+しきい値は実測値の少し下に置くラチェット方式で、カバレッジの退行だけを止める設定です。
+
+導入時は 85 / 75 / 85 / 85 でしたが、2026-08-08 の補強（Server Actions・認可・境界値・
+防御的分岐のテスト追加）で実測が Stmts 95.67 / Branch 92.88 / Funcs 94.14 / Lines 95.46 まで
+上がったため、**94 / 90 / 92 / 94 へ引き上げ済み**です。方針どおり、向上したら随時引き上げます。
 
 ## 4b. E2Eの flaky（`SQLITE_BUSY: database is locked`）✅ 対応済み
 
@@ -188,8 +201,8 @@ Secret scanning・Push protectionを有効化する作業自体は別ドキュ�
 
 | 項目 | 優先度 | 理由 |
 |---|---|---|
-| 1. ブランチ保護（必須チェック・会話解決必須化） | 高 | 今回「レビュー中でもマージできる」状態を実際に経験した |
-| 2. Copilot連携の確認 | 中 | 動いていない設定を放置すると誤解のもとになる |
+| 1. ブランチ保護（必須チェック・会話解決必須化） | ✅ 完了 | 2026-08-08 に設定済みであることを実地で確認（§1） |
+| 2. Copilot連携の確認 | 中（残） | 動いていない設定を放置すると誤解のもとになる。PR #44 では Reviewers に現れておらず、既に外れている可能性がある（設定画面は API から読めないため目視が必要） |
 | 3. 裁定ポリシー明文化 | 中 | 実装コストが低く、今回学んだことをすぐ反映できる（PR #36 で対応） |
 | 4b. E2Eの flaky（SQLITE_BUSY） | ✅ 完了 | `lib/db/client.ts` に busy timeout を導入して解消 |
 | 8. Secret scanning確認 | 中 | Public リポジトリのため実害が大きい（R-5参照） |
