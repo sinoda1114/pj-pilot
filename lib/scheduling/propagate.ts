@@ -345,7 +345,13 @@ function mergeSummaryDateChanges(
   // 戻るケース）も**落とさない**。`GanttView` は `changes` をループして SVAR の楽観更新を
   // リコンサイルするため、ここで落とすとドラッグで動かしたバーに `update-task` が飛ばず、
   // 「画面は動いたまま・DB は元のまま」という不整合が残る（一度そう実装して退行させた）。
-  // DB への書き込みは同じ値の UPDATE になるだけで無害。
+  //
+  // このとき `persistPropagateResult` は start/end に同じ値を書く UPDATE を1回流す。
+  // 日付そのものは変わらないが、`updated_at` は変わる（`lib/db/schema/app.ts` の
+  // `timestamps` が `$onUpdate` を持つため、値が同一でも UPDATE のたびに更新される。
+  // Copilot の指摘を受けてスキーマ定義で確認済み）。現状 `updatedAt` を読む処理は
+  // アプリ内に無いため実害は無いが、更新日時での並び替え・同期・監査を入れる際は
+  // 「日付が変わっていないのに更新扱いになる行がある」点に注意すること。
   return merged;
 }
 
