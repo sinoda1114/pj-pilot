@@ -110,8 +110,18 @@ async function runPropagation(
     //   - 逆転した子を1件持つサマリーは、再集計の結果 `before` 正常 → `after` 逆転に
     //     なる（実測: 2026-08-01〜08-20 → 2026-08-13〜07-16）。`/code-review` は
     //     「サマリーは逆転しない」としていたが誤りで、Cursor Bugbot の指摘が正しかった
+    // 条件は2つとも必要:
+    //   - **操作対象1件だけ**を見る（サマリーや後続の巻き添えを避ける）
+    //   - その1件が**新たに**逆転した場合のみ弾く（`before` 正常 → `after` 逆転）
+    // 移動は start/end を同じ Δ だけずらす平行移動なので、既に逆転している行を動かしても
+    // 逆転を作りも直しもしない。`after` だけを見て弾くと、旧バグ由来の逆転行を Gantt 上で
+    // 動かすことすらできなくなる（Cursor Bugbot の指摘。再現を確認した）。
     const targetChange = result.changes.find((change) => change.id === taskId);
-    if (targetChange && targetChange.after.endDate < targetChange.after.startDate) {
+    const newlyInverted =
+      targetChange !== undefined &&
+      targetChange.before.endDate >= targetChange.before.startDate &&
+      targetChange.after.endDate < targetChange.after.startDate;
+    if (newlyInverted) {
       throw new ValidationError("終了日は開始日以降である必要があります");
     }
 

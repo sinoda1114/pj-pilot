@@ -316,6 +316,23 @@ describe("app/projects/[id]/gantt/actions", () => {
       expect(restored).toMatchObject({ startDate: "2026-08-04", endDate: "2026-08-06" });
     });
 
+    it("既に逆転しているタスク自身も、移動なら動かせる（Gantt から位置を直せる）", async () => {
+      // 移動は start/end を同じ Δ だけずらす平行移動なので、逆転を作りも直しもしない。
+      // `after` だけを見て弾くと、旧バグ由来の逆転行を Gantt 上で動かせなくなる。
+      state.session = SESSION;
+      const { a } = await setupProjectWithChain();
+      await handle.db
+        .update(tasks)
+        .set({ startDate: "2026-08-10", endDate: "2026-07-13" })
+        .where(eq(tasks.id, a.id));
+
+      const result = await moveTaskAction(projectId, a.id, 3, true);
+
+      expect(result.ok).toBe(true);
+      const [moved] = await handle.db.select().from(tasks).where(eq(tasks.id, a.id));
+      expect(moved).toMatchObject({ startDate: "2026-08-13", endDate: "2026-07-16" });
+    });
+
     it("逆転した子を持つサマリーがあっても、正常なタスクのドラッグは通る", async () => {
       // サマリーの日付は子から導出されるため、子が1件でも逆転していると
       // 再集計結果（after）が逆転する。実測: before 2026-08-01〜08-20 が
