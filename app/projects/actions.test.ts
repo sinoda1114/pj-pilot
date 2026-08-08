@@ -385,4 +385,61 @@ describe("app/projects/actions", () => {
       expect((await findProject(project.id))?.deletedAt).toBeNull();
     });
   });
+  /**
+   * 公開前セキュリティ監査の指摘（未認証で 500）に対する回帰テスト。
+   *
+   * 以前はこのファイルだけ `input` を型注釈のまま信頼し、`input.name.trim()` を
+   * `getSession()` **より前**・`try` の外で呼んでいた。そのため未ログインの相手でも
+   * 型を詐称した JSON を1回 POST するだけで未捕捉の `TypeError` を起こせ、
+   * `{ok:false}` にならず 500 になっていた。
+   */
+  describe("ランタイム入力検証（Server Action は公開エンドポイント）", () => {
+    it.each([
+      ["null", null],
+      ["数値の name", { name: 1 }],
+      ["配列の name", { name: [] }],
+      ["数値の description", { name: "x", description: 1 }],
+      ["文字列そのもの", "name=x"],
+    ])("未ログイン + %s でも throw せず ok:false を返す", async (_label, input) => {
+      state.session = null;
+
+      const result = await createProjectAction(input);
+
+      expect(result.ok).toBe(false);
+    });
+
+    it.each([
+      ["オブジェクト", {}],
+      ["配列", ["x"]],
+      ["数値", 1],
+      ["null", null],
+    ])("projectId が %s でも throw せず ok:false を返す", async (_label, projectId) => {
+      state.session = SESSION;
+
+      await expect(updateProjectAction(projectId, { name: "x" })).resolves.toMatchObject({
+        ok: false,
+      });
+      await expect(deleteProjectAction(projectId)).resolves.toMatchObject({ ok: false });
+    });
+
+    it("PJ 名に NUL を含むと拒否する（trim をすり抜けて空名になるのを防ぐ）", async () => {
+      state.session = SESSION;
+
+      const result = await createProjectAction({ name: "\u0000" });
+
+      expect(result.ok).toBe(false);
+      const rows = await handle.db.select().from(projects);
+      expect(rows.some((row) => row.name === "")).toBe(false);
+    });
+
+    it("未ログインなら PJ を作成しない", async () => {
+      state.session = null;
+
+      const result = await createProjectAction({ name: "未ログインでは作れない" });
+
+      expect(result).toEqual({ ok: false, message: "ログインが必要です" });
+      const rows = await handle.db.select().from(projects);
+      expect(rows.some((row) => row.name === "未ログインでは作れない")).toBe(false);
+    });
+  });
 });

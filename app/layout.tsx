@@ -25,7 +25,7 @@ import { ModalsProvider } from "@mantine/modals";
 import { Notifications } from "@mantine/notifications";
 import { DatesLocaleProvider } from "../components/providers/DatesLocaleProvider";
 import { UserMenu } from "../components/auth/UserMenu";
-import { getFullSession } from "../lib/auth/session";
+import { getFullSession, getSession } from "../lib/auth/session";
 
 export const metadata: Metadata = {
   title: "pj-pilot",
@@ -39,10 +39,16 @@ export default async function RootLayout({
 }>) {
   // ヘッダーの表示専用（名前/email）。`getSession()` が返す `AuthSession` は
   // `userId` のみのため、表示情報が必要なここだけ生セッションを直接見る
-  // （`lib/auth/session.ts` 参照）。ドメイン制限のチェックは行わないが、
-  // 表示専用でありデータアクセスには使わないため問題ない
-  // （実際の認可は各ページの `requireLogin(await getSession())` が担う）。
-  const fullSession = await getFullSession();
+  // （`lib/auth/session.ts` 参照）。
+  //
+  // ただし**出すかどうか**の判定は `getSession()`（ドメイン制限チェック済み）で行う。
+  // `getFullSession()` だけで判定していたときは、`ALLOWED_EMAIL_DOMAINS` から外れた
+  // ユーザーにも氏名・メールとナビが表示され、「ログインできているのに何を押しても
+  // エラー」という状態になっていた（監査で実測）。他人のデータは出ないので
+  // 情報漏洩ではないが、防御線の外にいることが画面から分からないのは避ける。
+  // どちらも React の `cache()` 越しなので、2回呼んでも DB アクセスは増えない。
+  const session = await getSession();
+  const fullSession = session ? await getFullSession() : null;
 
   return (
     <html lang="ja" {...mantineHtmlProps}>

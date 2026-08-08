@@ -3,6 +3,7 @@
  * 描画・インタラクションは `TasksPageClient`（Client Component）に委譲する。
  */
 import { notFound } from "next/navigation";
+import { requireLogin } from "../../../../lib/auth/authz";
 import { getSession } from "../../../../lib/auth/session";
 import { db } from "../../../../lib/db";
 import { getActiveProject } from "../../../../lib/db/queries";
@@ -18,6 +19,10 @@ export default async function ProjectTasksPage({
 }) {
   const { id: projectId } = await params;
   const session = await getSession();
+  // 認可を最初に通す。`getActiveProject` が先だと、未ログインでも DB 照会が走り、
+  // `notFound()` になるかどうかの差から「その PJ ID が実在してアクティブか」を
+  // 判別できてしまう（監査で実測）。gantt / trash / settings の各ページと揃える。
+  requireLogin(session);
 
   const project = await getActiveProject(db, projectId);
   if (!project) {

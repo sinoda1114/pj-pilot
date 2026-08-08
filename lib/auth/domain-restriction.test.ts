@@ -38,4 +38,23 @@ describe("isAllowedEmailDomain", () => {
   it("@を含まない不正なメールアドレスは拒否する", () => {
     expect(isAllowedEmailDomain("not-an-email", "example.com")).toBe(false);
   });
+  /**
+   * 公開前セキュリティ監査の指摘。`split("@")[1]` は「最初の `@` の直後」を取るため、
+   * `alice@example.com@evil.com` が許可判定になっていた（実測で確認）。
+   * ログイン経路は Google OAuth のみで多重 `@` のアドレスは発行されないが、
+   * ここが実質唯一の防御線（リスク R-10）なので、安全性の根拠を外部の挙動に
+   * 依存させない。
+   */
+  it.each([
+    "alice@example.com@evil.com",
+    "alice@evil.com@example.com",
+    "alice@@example.com",
+    "alice@example.com@",
+  ])("`@` を複数含むアドレスは拒否する: %s", (email) => {
+    expect(isAllowedEmailDomain(email, "example.com")).toBe(false);
+  });
+
+  it("`@` を1つだけ含む正規のアドレスは従来どおり許可する", () => {
+    expect(isAllowedEmailDomain("alice@example.com", "example.com")).toBe(true);
+  });
 });

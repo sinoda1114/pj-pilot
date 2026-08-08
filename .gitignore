@@ -18,8 +18,18 @@ next-env.d.ts
 /blob-report
 
 # env files
-.env
-.env*.local
+# 除外はホワイトリスト方式にする。`.env` と `.env*.local` だけを列挙していると
+# Next.js が読む `.env.production` / `.env.development` / `.env.test` が追跡対象に
+# 残り、本番の値をローカル検証しようとして作ったファイルがそのまま Public リポジトリに
+# 入りうる（`git check-ignore -v .env.production` が NOT IGNORED を返すことを確認済み）。
+.env*
+!.env.example
+
+# 秘密鍵の類（*.pem は下の Playwright セクションとは別に、ここでも明示しておく）
+*.key
+*.p12
+*.pfx
+id_rsa*
 
 # vercel
 .vercel

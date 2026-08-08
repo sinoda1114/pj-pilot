@@ -9,7 +9,16 @@
  * 避けるため）。
  */
 export function isAllowedEmailDomain(email: string, allowedDomainsCsv: string | undefined): boolean {
-  const domain = email.split("@")[1]?.toLowerCase();
+  // `split("@")[1]` は「最初の `@` の直後」を取るため、`alice@example.com@evil.com` が
+  // 許可判定になってしまう（監査で実測）。`@` はちょうど1個であることを要求し、
+  // その後ろ全部をドメインとして扱う。Google が多重 `@` のアドレスを発行することは
+  // ないので現時点で到達経路は無いが、ここが実質唯一の防御線（リスク R-10）なので、
+  // 「なぜ安全か」を外部（Google の挙動）に依存させない。
+  const at = email.indexOf("@");
+  if (at === -1 || at !== email.lastIndexOf("@")) {
+    return false;
+  }
+  const domain = email.slice(at + 1).toLowerCase();
   if (!domain) {
     return false;
   }
