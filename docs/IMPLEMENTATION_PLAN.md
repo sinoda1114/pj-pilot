@@ -506,9 +506,11 @@ CI（`.github/workflows/ci.yml`）で `npm ci` → typecheck → lint → test �
 | 34 | 空状態・エラー状態・ローディングの整備 | feature |
 | 35 | アクセシビリティとレスポンシブの確認 | feature |
 
-### Phase 2（詳細化しない）
+### Phase 2
 
-カンバンボード / ダッシュボード・レポート。M6 完了後に別途計画します。
+カンバンボード / ダッシュボード・レポート。本ドキュメントでは詳細化していません。
+**2026-08-08 のヒアリングを経て [`docs/PHASE2_IMPLEMENTATION_PLAN.md`](PHASE2_IMPLEMENTATION_PLAN.md)
+に別途詳細化しました**（Issue #36〜#51）。
 
 ---
 
