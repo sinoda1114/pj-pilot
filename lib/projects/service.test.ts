@@ -149,6 +149,32 @@ describe("projects/service", () => {
       expect(result.description).toBe("元の説明");
     });
 
+    it("説明だけを更新でき、名前は変わらない", async () => {
+      const project = await createProject(handle.db, OWNER, {
+        name: "元の名前",
+        description: "元の説明",
+      });
+
+      const updated = await updateProject(handle.db, OWNER, project.id, {
+        description: "新しい説明",
+      });
+
+      expect(updated.description).toBe("新しい説明");
+      expect(updated.name).toBe("元の名前");
+    });
+
+    it("説明に null を渡すと説明をクリアできる（未指定の undefined とは区別する）", async () => {
+      const project = await createProject(handle.db, OWNER, {
+        name: "説明クリア",
+        description: "消される説明",
+      });
+
+      const updated = await updateProject(handle.db, OWNER, project.id, { description: null });
+
+      expect(updated.description).toBeNull();
+      expect(updated.name).toBe("説明クリア");
+    });
+
     it("dependencySyncEnabledを更新できる（M5 #29: 連動ON/OFFトグル）", async () => {
       const project = await createProject(handle.db, OWNER, { name: "連動設定確認用" });
       expect(project.dependencySyncEnabled).toBe(true);

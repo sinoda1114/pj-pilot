@@ -151,7 +151,11 @@ describe("tasks/hierarchy", () => {
       const root = await insertTask({ title: "root", sortOrder: 0 });
       const childA = await insertTask({ title: "childA", parentId: root.id, sortOrder: 0 });
       const childB = await insertTask({ title: "childB", parentId: root.id, sortOrder: 1 });
-      const grandchild = await insertTask({ title: "grandchild", parentId: childA.id, sortOrder: 0 });
+      const grandchild = await insertTask({
+        title: "grandchild",
+        parentId: childA.id,
+        sortOrder: 0,
+      });
 
       await indentTask(handle.db, SESSION, childB.id);
 
@@ -161,6 +165,23 @@ describe("tasks/hierarchy", () => {
       expect((await getTaskById(handle.db, grandchild.id))?.parentId).toBe(childA.id);
       // childB から親を root まで辿っても、途中で childB 自身に戻ってこない（循環していない）。
       await expectNoCycleFromAncestorChain(childB.id);
+    });
+
+    it("兄弟が sortOrder 順に並んでいなくても、sortOrder が最大の「直前の兄弟」が選ばれる", async () => {
+      // `listActiveTasksByParent` は ORDER BY を持たず、返る順序は挿入順に依存する。
+      // 「直前の兄弟」の判定を先頭一致や最後の要素で済ませていると、
+      // 挿入順と sortOrder がずれた瞬間に誤った親を選んでしまう。
+      const first = await insertTask({ title: "sortOrder 0", sortOrder: 0 });
+      const expectedParent = await insertTask({ title: "sortOrder 2", sortOrder: 2 });
+      const middle = await insertTask({ title: "sortOrder 1（後から挿入）", sortOrder: 1 });
+      const target = await insertTask({ title: "インデント対象", sortOrder: 3 });
+
+      await indentTask(handle.db, SESSION, target.id);
+
+      const result = await getTaskById(handle.db, target.id);
+      expect(result?.parentId).toBe(expectedParent.id);
+      expect(result?.parentId).not.toBe(first.id);
+      expect(result?.parentId).not.toBe(middle.id);
     });
 
     it("プロジェクトをまたいだ「直前の兄弟」は選ばれない（別プロジェクトのルートタスクへの誤ヒット防止）", async () => {
@@ -223,6 +244,20 @@ describe("tasks/hierarchy", () => {
 
       const result = await getTaskById(handle.db, child.id);
       expect(result?.parentId).toBeNull();
+    });
+
+    it("親が論理削除済みの不整合データでは NotFoundError を投げ、階層を書き換えない（防御的ガード）", async () => {
+      // 生存している子を持つ親は通常削除できない（lib/tasks/deletion.ts）が、
+      // 万一その不変条件が破れたときに、祖父母 ID を undefined 扱いで
+      // 黙ってルートへ繰り上げてしまわないことを確認する。
+      const grandparent = await insertTask({ title: "祖父母" });
+      const parent = await insertTask({ title: "親", parentId: grandparent.id });
+      const child = await insertTask({ title: "子", parentId: parent.id });
+      await handle.db.update(tasks).set({ deletedAt: new Date() }).where(eq(tasks.id, parent.id));
+
+      await expect(outdentTask(handle.db, SESSION, child.id)).rejects.toThrow(NotFoundError);
+
+      expect((await getTaskById(handle.db, child.id))?.parentId).toBe(parent.id);
     });
 
     it("既にルート（親が居ない）タスクは ValidationError を投げる", async () => {

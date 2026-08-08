@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { UnauthorizedError } from "../auth/errors";
@@ -134,6 +135,35 @@ describe("dependencies/service", () => {
       ).rejects.toThrow(ValidationError);
     });
 
+    it("他プロジェクトのタスクを後続にすると ValidationError を投げる", async () => {
+      // 先行タスク側（既存テスト）と後続タスク側は別々の分岐。片方だけ検証していると、
+      // 後続側のチェックを消しても気づけずプロジェクトをまたいだ依存が作れてしまう。
+      const [otherProject] = await handle.db.insert(projects).values({ name: "他PJ" }).returning();
+      if (!otherProject) {
+        throw new Error("Failed to create other project");
+      }
+      const [otherTask] = await handle.db
+        .insert(tasks)
+        .values({
+          projectId: otherProject.id,
+          title: "他PJのタスク",
+          startDate: "2026-08-01",
+          endDate: "2026-08-05",
+        })
+        .returning();
+      if (!otherTask) {
+        throw new Error("Failed to create other task");
+      }
+      const a = await insertTask("A");
+
+      await expect(
+        createDependency(handle.db, SESSION, projectId, a.id, otherTask.id),
+      ).rejects.toThrow(ValidationError);
+
+      const created = await listDependencies(handle.db, SESSION, projectId);
+      expect(created).toEqual([]);
+    });
+
     it("同じ依存を重複して作成すると ValidationError を投げる", async () => {
       const a = await insertTask("A");
       const b = await insertTask("B");
@@ -185,6 +215,21 @@ describe("dependencies/service", () => {
   describe("listDependencies", () => {
     it("ログインしていなければ UnauthorizedError を投げる", async () => {
       await expect(listDependencies(handle.db, null, projectId)).rejects.toThrow(UnauthorizedError);
+    });
+
+    it("存在しないプロジェクトは NotFoundError を投げる（空配列で握り潰さない）", async () => {
+      await expect(listDependencies(handle.db, SESSION, "nonexistent-project")).rejects.toThrow(
+        NotFoundError,
+      );
+    });
+
+    it("論理削除済みプロジェクトの依存一覧は NotFoundError を投げる", async () => {
+      await handle.db
+        .update(projects)
+        .set({ deletedAt: new Date() })
+        .where(eq(projects.id, projectId));
+
+      await expect(listDependencies(handle.db, SESSION, projectId)).rejects.toThrow(NotFoundError);
     });
 
     it("プロジェクトに紐づく依存を返す", async () => {

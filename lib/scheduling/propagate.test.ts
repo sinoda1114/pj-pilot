@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  aggregateSummaryValues,
-  moveTask,
-  resizeTaskEnd,
-  wouldCreateCycle,
-} from "./propagate";
+import { aggregateSummaryValues, moveTask, resizeTaskEnd, wouldCreateCycle } from "./propagate";
 import type { Dependency, ScheduleTask } from "./types";
 
 /** テスト用のタスクを簡潔に組み立てるヘルパー。指定しない項目は無害な既定値にする。 */
@@ -220,6 +215,85 @@ describe("moveTask", () => {
     expect(byId.P?.after).toEqual({ startDate: "2026-08-08", endDate: "2026-08-13" });
   });
 
+  it("親 summary の期間が子の再計算後も変わらない場合、changes に親を含めない（不要な UPDATE を出さない）", () => {
+    // P の期間は C2 が決めており、C1 を動かしても min(start)/max(end) は変わらない。
+    // この場合に親を changes へ入れてしまうと、永続化層が毎回無意味な UPDATE を
+    // 発行し、伝播結果のトーストにも動いていないタスクが並んでしまう。
+    // 併せて、子が3件あるときの min/max の畳み込み（新しい値を採用する側と
+    // 既存値を保つ側の両方）が正しいことも確認する。
+    const tasks = [
+      task({ id: "P", type: "summary", startDate: "2026-08-01", endDate: "2026-08-31" }),
+      task({ id: "C1", parentId: "P", startDate: "2026-08-10", endDate: "2026-08-20" }),
+      task({ id: "C2", parentId: "P", startDate: "2026-08-01", endDate: "2026-08-31" }),
+      task({ id: "C3", parentId: "P", startDate: "2026-08-05", endDate: "2026-08-25" }),
+    ];
+
+    const result = moveTask({
+      taskId: "C1",
+      deltaDays: 2,
+      tasks,
+      dependencies: [],
+      dependencySyncEnabled: true,
+    });
+
+    expect(result.changes.map((c) => c.id)).toEqual(["C1"]);
+    // 日付は変わらないが、進捗・工数の再集計対象としては親を返す。
+    expect(result.summaryUpdates.map((s) => s.id)).toEqual(["P"]);
+  });
+
+  it("依存先のタスクがタスク一覧に含まれていなくても落ちず、他の後続への伝播は続く", () => {
+    // 依存レコードはタスクを論理削除しても残る（決定 D-06）。ここでは
+    // 参照先が一覧に無い（別PJへ移動済み等の不整合）ケースでも
+    // 例外にせず読み飛ばすことを確認する。
+    const tasks = [
+      task({ id: "A", startDate: "2026-08-03", endDate: "2026-08-05" }),
+      task({ id: "C", startDate: "2026-08-10", endDate: "2026-08-12" }),
+    ];
+    const dependencies = [dep("A", "存在しないタスク"), dep("A", "C")];
+
+    const result = moveTask({
+      taskId: "A",
+      deltaDays: 3,
+      tasks,
+      dependencies,
+      dependencySyncEnabled: true,
+    });
+
+    expect(result.changes.map((c) => c.id)).toEqual(["A", "C"]);
+    // 一覧に無いタスクは「スキップした理由」としても報告しない（表示できないため）。
+    expect(result.skipped).toEqual([]);
+  });
+
+  it("parentId が一覧に無いタスクを指していても落ちず、summary 再計算をスキップする", () => {
+    // 親 summary が別PJに移動した等でタスク一覧から欠けている不整合データ。
+    const tasks = [
+      task({ id: "A", parentId: "存在しない親", startDate: "2026-08-03", endDate: "2026-08-05" }),
+    ];
+
+    const result = moveTask({
+      taskId: "A",
+      deltaDays: 1,
+      tasks,
+      dependencies: [],
+      dependencySyncEnabled: true,
+    });
+
+    expect(result.changes.map((c) => c.id)).toEqual(["A"]);
+    expect(result.summaryUpdates).toEqual([]);
+  });
+
+  it("一覧に存在しないタスク ID を動かそうとするとエラーになる（黙って何もしない結果を返さない）", () => {
+    expect(() =>
+      moveTask({
+        taskId: "存在しないタスク",
+        deltaDays: 1,
+        tasks: [task({ id: "A" })],
+        dependencies: [],
+        dependencySyncEnabled: true,
+      }),
+    ).toThrow("task not found: 存在しないタスク");
+  });
+
   it("T-13: 直列 A→B→C、B が削除済みのとき A を +3 しても C は不動", () => {
     const tasks = [
       task({ id: "A", startDate: "2026-08-03", endDate: "2026-08-05" }),
@@ -381,6 +455,20 @@ describe("resizeTaskEnd", () => {
   });
 });
 
+describe("resizeTaskEnd: 異常系", () => {
+  it("一覧に存在しないタスク ID をリサイズしようとするとエラーになる", () => {
+    expect(() =>
+      resizeTaskEnd({
+        taskId: "存在しないタスク",
+        deltaDays: 1,
+        tasks: [task({ id: "A" })],
+        dependencies: [],
+        dependencySyncEnabled: true,
+      }),
+    ).toThrow("task not found: 存在しないタスク");
+  });
+});
+
 describe("wouldCreateCycle", () => {
   it("T-10: 追加するとサイクルになる依存は検出される", () => {
     // 既存: A→B→C。ここに C→A を足すとサイクルになる
@@ -391,6 +479,17 @@ describe("wouldCreateCycle", () => {
   it("サイクルにならない依存の追加は許可される", () => {
     const dependencies = [dep("A", "B")];
     expect(wouldCreateCycle(dependencies, "A", "C")).toBe(false);
+  });
+
+  it("合流（ダイヤモンド）があっても同じノードを二度辿らずに探索を終える", () => {
+    // A→B, A→C, B→D, C→D。D は B 経由と C 経由の2回スタックに積まれる。
+    // 訪問済み判定が無いと、合流の多いグラフで探索が指数的に膨らむ。
+    const dependencies = [dep("A", "B"), dep("A", "C"), dep("B", "D"), dep("C", "D")];
+
+    // Z→A は既存の依存グラフのどこにも戻らないためサイクルにならない。
+    expect(wouldCreateCycle(dependencies, "Z", "A")).toBe(false);
+    // 一方 D→A はサイクル（A→B→D→A）になる。
+    expect(wouldCreateCycle(dependencies, "D", "A")).toBe(true);
   });
 
   it("自己参照はサイクルとして拒否される", () => {

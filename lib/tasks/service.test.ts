@@ -1,11 +1,12 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { UnauthorizedError } from "../auth/errors";
 import { createDb, type DbHandle } from "../db/client";
-import { projects } from "../db/schema";
+import { projects, tasks } from "../db/schema";
 import { NotFoundError, ValidationError } from "../errors";
 import { createTask, getTask, listTasks, updateTask } from "./service";
 
@@ -293,6 +294,98 @@ describe("tasks/service", () => {
       const updated = await updateTask(handle.db, SESSION, child.id, { parentId: null });
 
       expect(updated.parentId).toBeNull();
+    });
+
+    it("存在しないタスクを親に指定すると NotFoundError を投げる", async () => {
+      const task = await createTask(handle.db, SESSION, projectId, {
+        title: "T",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+
+      await expect(
+        updateTask(handle.db, SESSION, task.id, { parentId: "nonexistent-task" }),
+      ).rejects.toThrow(NotFoundError);
+    });
+
+    it("他プロジェクトのタスクを親に指定すると ValidationError を投げる（PJ をまたぐ親子関係の防止）", async () => {
+      const [otherProject] = await handle.db.insert(projects).values({ name: "他PJ" }).returning();
+      if (!otherProject) {
+        throw new Error("Failed to create other project");
+      }
+      const otherTask = await createTask(handle.db, SESSION, otherProject.id, {
+        title: "他PJのタスク",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      const task = await createTask(handle.db, SESSION, projectId, {
+        title: "T",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+
+      await expect(
+        updateTask(handle.db, SESSION, task.id, { parentId: otherTask.id }),
+      ).rejects.toThrow(ValidationError);
+
+      expect((await getTask(handle.db, SESSION, task.id)).parentId).toBeNull();
+    });
+
+    it("子を持つタスクでも、子孫でない別のタスクの下へは付け替えできる（循環チェックの偽陽性防止）", async () => {
+      // 循環チェック（isDescendantOf）が「子孫を親にする」以外まで巻き込んで
+      // 拒否してしまうと、正常な階層編集ができなくなる。子を持つタスクを
+      // 無関係な別枝へ移せることを確認する。
+      const movingParent = await createTask(handle.db, SESSION, projectId, {
+        title: "移動する親",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      const child = await createTask(handle.db, SESSION, projectId, {
+        title: "その子",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: movingParent.id,
+      });
+      const newParent = await createTask(handle.db, SESSION, projectId, {
+        title: "新しい親（別枝）",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+
+      const updated = await updateTask(handle.db, SESSION, movingParent.id, {
+        parentId: newParent.id,
+      });
+
+      expect(updated.parentId).toBe(newParent.id);
+      // 子は移動した親の下のまま（巻き添えで動いていない）。
+      expect((await getTask(handle.db, SESSION, child.id)).parentId).toBe(movingParent.id);
+    });
+
+    it("parent_id が循環している不整合データでも、循環チェックが無限ループしない（防御的ガード）", async () => {
+      // 本来は作れないが、直接 SQL で A→B→A の循環を作る。この状態で
+      // 親を付け替えると isDescendantOf の BFS が同じノードを何度も辿るため、
+      // 訪問済み判定が無いと処理が返ってこなくなる。
+      const a = await createTask(handle.db, SESSION, projectId, {
+        title: "A",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      const b = await createTask(handle.db, SESSION, projectId, {
+        title: "B",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: a.id,
+      });
+      const newParent = await createTask(handle.db, SESSION, projectId, {
+        title: "新しい親",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      await handle.db.update(tasks).set({ parentId: b.id }).where(eq(tasks.id, a.id));
+
+      const updated = await updateTask(handle.db, SESSION, a.id, { parentId: newParent.id });
+
+      expect(updated.parentId).toBe(newParent.id);
     });
 
     it("マスアサインメント対策: 型に無い projectId が混入しても他プロジェクトへ移動しない（セキュリティレビュー指摘）", async () => {
