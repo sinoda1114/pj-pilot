@@ -216,6 +216,63 @@ describe("tasks/service", () => {
         }),
       ).rejects.toThrow(ValidationError);
     });
+
+    /**
+     * Issue #59: 決定 D-11 の集計（日付・進捗・工数の親への積み上げ）は
+     * `type === "summary"` の行しか処理しない。子を作った時点で親に印を
+     * 付けないと、集計が静かに効かなくなる。
+     */
+    it("parentId を指定して作成すると、親が summary になる", async () => {
+      const parent = await createTask(handle.db, SESSION, projectId, {
+        title: "親",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      expect(parent.type).toBe("task");
+
+      await createTask(handle.db, SESSION, projectId, {
+        title: "子",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: parent.id,
+      });
+
+      expect((await getTask(handle.db, SESSION, parent.id)).type).toBe("summary");
+    });
+
+    it("親が milestone の場合は種別を書き換えない", async () => {
+      const parent = await createTask(handle.db, SESSION, projectId, {
+        title: "マイルストーン",
+        startDate: "2026-08-01",
+        endDate: "2026-08-01",
+        type: "milestone",
+      });
+
+      await createTask(handle.db, SESSION, projectId, {
+        title: "子",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: parent.id,
+      });
+
+      expect((await getTask(handle.db, SESSION, parent.id)).type).toBe("milestone");
+    });
+
+    it("parentId を指定しない作成では、どのタスクも summary にならない", async () => {
+      const first = await createTask(handle.db, SESSION, projectId, {
+        title: "A",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      const second = await createTask(handle.db, SESSION, projectId, {
+        title: "B",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+
+      expect((await getTask(handle.db, SESSION, first.id)).type).toBe("task");
+      expect(second.type).toBe("task");
+    });
   });
 
   describe("listTasks", () => {
@@ -509,6 +566,175 @@ describe("tasks/service", () => {
       const updated = await updateTask(handle.db, SESSION, task.id, maliciousInput);
 
       expect(updated.deletedAt).toBeNull();
+    });
+  });
+
+  /**
+   * Issue #59: 親を付け替えると新旧2つの親の `type` が同時に動く。片方でも
+   * 漏れると「子が居るのに task（集計されない）」か「子が0件なのに summary
+   * （カンバン・ダッシュボードから消え、Gantt でも動かせない）」が残る。
+   */
+  describe("updateTask による summary の付け外し", () => {
+    async function createRootTask(title: string) {
+      return createTask(handle.db, SESSION, projectId, {
+        title,
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+    }
+
+    async function typeOf(taskId: string) {
+      return (await getTask(handle.db, SESSION, taskId)).type;
+    }
+
+    it("別の親へ移すと、新しい親が summary になり、元の親は task に戻る", async () => {
+      const oldParent = await createRootTask("元の親");
+      const newParent = await createRootTask("新しい親");
+      const child = await createTask(handle.db, SESSION, projectId, {
+        title: "子",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: oldParent.id,
+      });
+      expect(await typeOf(oldParent.id)).toBe("summary");
+
+      await updateTask(handle.db, SESSION, child.id, { parentId: newParent.id });
+
+      expect(await typeOf(newParent.id)).toBe("summary");
+      expect(await typeOf(oldParent.id)).toBe("task");
+    });
+
+    it("元の親に他の子が残っていれば summary のまま", async () => {
+      const oldParent = await createRootTask("元の親");
+      const newParent = await createRootTask("新しい親");
+      const child = await createTask(handle.db, SESSION, projectId, {
+        title: "移動する子",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: oldParent.id,
+      });
+      await createTask(handle.db, SESSION, projectId, {
+        title: "残る子",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: oldParent.id,
+      });
+
+      await updateTask(handle.db, SESSION, child.id, { parentId: newParent.id });
+
+      expect(await typeOf(oldParent.id)).toBe("summary");
+      expect(await typeOf(newParent.id)).toBe("summary");
+    });
+
+    it("parentId を null にしてルート化すると、元の親から印が外れる", async () => {
+      const parent = await createRootTask("親");
+      const child = await createTask(handle.db, SESSION, projectId, {
+        title: "子",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: parent.id,
+      });
+      expect(await typeOf(parent.id)).toBe("summary");
+
+      await updateTask(handle.db, SESSION, child.id, { parentId: null });
+
+      expect(await typeOf(parent.id)).toBe("task");
+    });
+
+    it("ルートのタスクを初めて親の下に入れると、その親が summary になる", async () => {
+      const parent = await createRootTask("親");
+      const orphan = await createRootTask("ルートのタスク");
+
+      await updateTask(handle.db, SESSION, orphan.id, { parentId: parent.id });
+
+      expect(await typeOf(parent.id)).toBe("summary");
+    });
+
+    it("親が milestone の場合、付け替えても種別を書き換えない", async () => {
+      const oldParent = await createRootTask("元の親");
+      const milestone = await createTask(handle.db, SESSION, projectId, {
+        title: "マイルストーン",
+        startDate: "2026-08-01",
+        endDate: "2026-08-01",
+        type: "milestone",
+      });
+      const child = await createTask(handle.db, SESSION, projectId, {
+        title: "子",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: oldParent.id,
+      });
+
+      await updateTask(handle.db, SESSION, child.id, { parentId: milestone.id });
+
+      expect(await typeOf(milestone.id)).toBe("milestone");
+      expect(await typeOf(oldParent.id)).toBe("task");
+    });
+
+    /**
+     * 「親に UPDATE が飛んでいない」ことを `updatedAt` で見る。`updated_at` は
+     * 秒精度（mode: "timestamp"）なので、直後に比較しても同一秒に収まって
+     * 素通ししてしまう。そのため親の `updatedAt` を過去に倒してから確認する
+     * （`$onUpdate` は明示指定した値を上書きしないため、この細工が効く）。
+     */
+    const SENTINEL_UPDATED_AT = new Date("2020-01-01T00:00:00Z");
+
+    async function backdateUpdatedAt(taskId: string) {
+      await handle.db
+        .update(tasks)
+        .set({ updatedAt: SENTINEL_UPDATED_AT })
+        .where(eq(tasks.id, taskId));
+    }
+
+    it("parentId を変えない更新では、親に余計な UPDATE を撃たない", async () => {
+      const parent = await createRootTask("親");
+      const child = await createTask(handle.db, SESSION, projectId, {
+        title: "子",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: parent.id,
+      });
+      expect(await typeOf(parent.id)).toBe("summary");
+      await backdateUpdatedAt(parent.id);
+
+      await updateTask(handle.db, SESSION, child.id, { title: "タイトルだけ変更" });
+
+      const parentAfterUpdate = await getTask(handle.db, SESSION, parent.id);
+      expect(parentAfterUpdate.type).toBe("summary");
+      expect(parentAfterUpdate.updatedAt).toEqual(SENTINEL_UPDATED_AT);
+    });
+
+    it("同じ親を指定し直しただけの更新でも、親に余計な UPDATE を撃たない", async () => {
+      const parent = await createRootTask("親");
+      const child = await createTask(handle.db, SESSION, projectId, {
+        title: "子",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: parent.id,
+      });
+      await backdateUpdatedAt(parent.id);
+
+      await updateTask(handle.db, SESSION, child.id, { parentId: parent.id });
+
+      const parentAfterUpdate = await getTask(handle.db, SESSION, parent.id);
+      expect(parentAfterUpdate.type).toBe("summary");
+      expect(parentAfterUpdate.updatedAt).toEqual(SENTINEL_UPDATED_AT);
+    });
+
+    it("検証に失敗した更新では、親の印が一切変わらない", async () => {
+      const oldParent = await createRootTask("元の親");
+      const child = await createTask(handle.db, SESSION, projectId, {
+        title: "子",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        parentId: oldParent.id,
+      });
+
+      await expect(
+        updateTask(handle.db, SESSION, child.id, { parentId: "nonexistent-task" }),
+      ).rejects.toThrow(NotFoundError);
+
+      expect(await typeOf(oldParent.id)).toBe("summary");
     });
   });
 
