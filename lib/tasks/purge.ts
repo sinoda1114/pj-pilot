@@ -78,15 +78,29 @@ export async function purgeExpiredTrash(
   ) as SQL;
   const taskIdsToPurge = db.select({ id: tasks.id }).from(tasks).where(isTaskToPurge);
 
-  // 5文とも常に発行する。`db.batch()` の型が空配列を許さない非空タプルを要求するため
+  // 6文とも常に発行する。`db.batch()` の型が空配列を許さない非空タプルを要求するため
   // 分岐で組み立てる必要があった旧実装と異なり、条件式は「マッチ0件」でも有効な SQL なので
   // 分岐が不要になっている。projects を最後に削除するのは、それより前の文の中の
   // `expiredProjectIds` サブクエリがまだ削除されていない projects 行を参照するため。
   // project_members も同じ理由で projects より前に削除する必要がある
   // （`/security-review` 指摘: 元実装は project_members を消しておらず、
   // プロジェクト削除のたびに孤児が積み上がっていた）。
-  const [deletedAssignees, deletedDependencies, deletedTasks, deletedMembers, deletedProjects] =
+  const [, deletedAssignees, deletedDependencies, deletedTasks, deletedMembers, deletedProjects] =
     await db.batch([
+      // 物理削除されるタスクを親に持つ**残存**タスクの `parent_id` を先に外す。
+      //
+      // 本番（Turso の HTTP 接続）は接続ごとに `PRAGMA foreign_keys = ON` を担保できず
+      // FK が無言で効かない（リスク R-7）。そのため「親の deleted_at が子より古い」
+      // データが1件でもあると、親だけ先に物理削除されて子の `parent_id` が宙吊りになる。
+      // ローカル（ファイル DB）は FK が既定で有効なので、同じ状況で cron が
+      // `SQLITE_CONSTRAINT` で落ちる。**環境ごとに壊れ方が違う**ので、FK に頼らず
+      // アプリ層で明示的に外す（§4.4 の方針）。
+      // `tasks` の DELETE より前に置くこと。
+      db
+        .update(tasks)
+        .set({ parentId: null })
+        .where(inArray(tasks.parentId, taskIdsToPurge))
+        .returning({ id: tasks.id }),
       db
         .delete(taskAssignees)
         .where(inArray(taskAssignees.taskId, taskIdsToPurge))

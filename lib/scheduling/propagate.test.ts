@@ -944,3 +944,54 @@ describe("moveTask: 同一タスクが「Δシフト対象」と「変更され�
     expect(p?.after).toEqual({ startDate: "2026-02-04", endDate: "2026-02-20" });
   });
 });
+
+/**
+ * 論理削除済みのサマリー自身を再集計しない（公開前セキュリティ監査 / リスク R-9）。
+ *
+ * 子側には `!c.isDeleted` フィルタがあったのに、サマリー自身の生存は見ていなかった。
+ * 対になる `lib/tasks/summary.ts` は除外しており、非対称だった。
+ */
+describe("再集計は論理削除済みのサマリーを対象にしない", () => {
+  it("削除済みサマリーは changes にも summaryUpdates にも現れない", () => {
+    const tasks = [
+      task({
+        id: "S",
+        type: "summary",
+        isDeleted: true,
+        startDate: "2026-02-01",
+        endDate: "2026-02-28",
+      }),
+      task({ id: "C", parentId: "S", startDate: "2026-02-10", endDate: "2026-02-15" }),
+    ];
+
+    const result = moveTask({
+      taskId: "C",
+      deltaDays: 3,
+      tasks,
+      dependencies: [],
+      dependencySyncEnabled: true,
+      bypassSync: false,
+    });
+
+    expect(result.changes.map((c) => c.id)).toEqual(["C"]);
+    expect(result.summaryUpdates.map((u) => u.id)).not.toContain("S");
+  });
+
+  it("生存しているサマリーはこれまでどおり再集計される", () => {
+    const tasks = [
+      task({ id: "S", type: "summary", startDate: "2026-02-01", endDate: "2026-02-28" }),
+      task({ id: "C", parentId: "S", startDate: "2026-02-10", endDate: "2026-02-15" }),
+    ];
+
+    const result = moveTask({
+      taskId: "C",
+      deltaDays: 3,
+      tasks,
+      dependencies: [],
+      dependencySyncEnabled: true,
+      bypassSync: false,
+    });
+
+    expect(result.changes.map((c) => c.id).sort()).toEqual(["C", "S"]);
+  });
+});

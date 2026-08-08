@@ -7,11 +7,13 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDb, type DbHandle } from "./client";
 import {
   getActiveProject,
+  listActiveDependenciesByProject,
   listActiveProjects,
   listAllTasksByProject,
+  listDependenciesByProject,
   listDeletedTasksByProject,
 } from "./queries";
-import { projects, tasks } from "./schema";
+import { projects, taskDependencies, tasks } from "./schema";
 
 describe("queries: 生存レコードのみを返す（§3.2 / §4.4(c)）", () => {
   let dir: string;
@@ -225,5 +227,100 @@ describe("listAllTasksByProject（M4 依存伝播用）", () => {
     const result = await listAllTasksByProject(handle.db, projectId);
 
     expect(result).toHaveLength(0);
+  });
+});
+
+/**
+ * Gantt の表示に渡す依存は、両端タスクの生存で絞る（公開前セキュリティ監査 / リスク R-9）。
+ *
+ * タスクだけ `listActiveTasksByProject` で絞って依存を全件渡していたため、削除済み
+ * タスクを指すリンクがそのまま Client Component へ流れ、ゴミ箱の中のタスク ID が
+ * 画面ソースに露出していた（実測で確認）。
+ */
+describe("listActiveDependenciesByProject", () => {
+  let dir: string;
+  let handle: DbHandle;
+  let projectId: string;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "pj-pilot-active-deps-test-"));
+    handle = createDb(`file:${join(dir, "test.db")}`);
+    await migrate(handle.db, { migrationsFolder: "./drizzle" });
+
+    const [project] = await handle.db.insert(projects).values({ name: "P" }).returning();
+    if (!project) {
+      throw new Error("Failed to create test project");
+    }
+    projectId = project.id;
+  });
+
+  afterEach(() => {
+    try {
+      handle.client.close();
+    } finally {
+      if (existsSync(dir)) {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  async function insertTask(title: string, deletedAt: Date | null = null) {
+    const [row] = await handle.db
+      .insert(tasks)
+      .values({
+        projectId,
+        title,
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+        deletedAt,
+      })
+      .returning();
+    if (!row) {
+      throw new Error("Failed to create test task");
+    }
+    return row;
+  }
+
+  it("両端が生存している依存だけを返す", async () => {
+    const a = await insertTask("A");
+    const b = await insertTask("B", new Date());
+    const c = await insertTask("C");
+
+    // A→B（後続が削除済み）, B→C（先行が削除済み）, A→C（両端とも生存）
+    await handle.db.insert(taskDependencies).values([
+      { projectId, predecessorId: a.id, successorId: b.id },
+      { projectId, predecessorId: b.id, successorId: c.id },
+      { projectId, predecessorId: a.id, successorId: c.id },
+    ]);
+
+    const active = await listActiveDependenciesByProject(handle.db, projectId);
+
+    expect(active).toHaveLength(1);
+    expect(active[0]).toMatchObject({ predecessorId: a.id, successorId: c.id });
+  });
+
+  it("伝播用の listDependenciesByProject は従来どおり全件返す（削除済みの後続を打ち切るために必要）", async () => {
+    const a = await insertTask("A");
+    const b = await insertTask("B", new Date());
+    await handle.db
+      .insert(taskDependencies)
+      .values([{ projectId, predecessorId: a.id, successorId: b.id }]);
+
+    expect(await listDependenciesByProject(handle.db, projectId)).toHaveLength(1);
+    expect(await listActiveDependenciesByProject(handle.db, projectId)).toHaveLength(0);
+  });
+
+  it("他プロジェクトの依存は返さない", async () => {
+    const a = await insertTask("A");
+    const b = await insertTask("B");
+    const [other] = await handle.db.insert(projects).values({ name: "OTHER" }).returning();
+    if (!other) {
+      throw new Error("Failed to create other project");
+    }
+    await handle.db
+      .insert(taskDependencies)
+      .values([{ projectId: other.id, predecessorId: a.id, successorId: b.id }]);
+
+    expect(await listActiveDependenciesByProject(handle.db, projectId)).toHaveLength(0);
   });
 });

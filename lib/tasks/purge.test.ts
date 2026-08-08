@@ -287,4 +287,71 @@ describe("purgeExpiredTrash（M1 #9c / §4.4(a)(b)）", () => {
     const remaining = await handle.db.select().from(projects).where(eq(projects.id, projectId));
     expect(remaining).toHaveLength(1);
   });
+  /**
+   * リスク R-7 の「孤児 0 件を結合テストで検証する」を実体にする。
+   *
+   * 本番（Turso の HTTP 接続）は接続ごとに `PRAGMA foreign_keys = ON` を担保できず
+   * FK が無言で効かない。一方ローカルのファイル DB は既定で FK が有効なので、
+   * **同じバグがローカルでは例外、本番では静かな孤児**という形で現れる。
+   * ここでは本番相当（FK OFF）に切り替えたうえで孤児を SQL で数える。
+   */
+  describe("purge 後に孤児が残らない（リスク R-7）", () => {
+    async function countOrphans() {
+      const rows = await handle.client.execute(`
+        select
+          (select count(*) from tasks t
+             where t.parent_id is not null
+               and not exists (select 1 from tasks p where p.id = t.parent_id)) as taskParent,
+          (select count(*) from tasks t
+             where not exists (select 1 from projects p where p.id = t.project_id)) as taskProject,
+          (select count(*) from task_assignees a
+             where not exists (select 1 from tasks t where t.id = a.task_id)) as assignee,
+          (select count(*) from task_dependencies d
+             where not exists (select 1 from tasks t where t.id = d.predecessor_id)
+                or not exists (select 1 from tasks t where t.id = d.successor_id)) as dependency,
+          (select count(*) from project_members m
+             where not exists (select 1 from projects p where p.id = m.project_id)) as member
+      `);
+      return rows.rows[0] as unknown as Record<string, number>;
+    }
+
+    beforeEach(async () => {
+      // 本番（Turso HTTP）と同じ「FK が効かない」状態にする。有効なままだと
+      // 孤児ではなく SQLITE_CONSTRAINT で落ちてしまい、本番の壊れ方を再現できない。
+      await handle.client.execute("PRAGMA foreign_keys = OFF");
+    });
+
+    it("親だけが期限切れで子が残る場合でも、子の parent_id が宙吊りにならない", async () => {
+      const parent = await insertTask({ title: "親", deletedAt: daysAgo(40) });
+      const child = await insertTask({ title: "子", parentId: parent.id });
+
+      const result = await purgeExpiredTrash(handle.db, NOW);
+
+      expect(result.purgedTaskCount).toBe(1);
+      const [remainingChild] = await handle.db.select().from(tasks).where(eq(tasks.id, child.id));
+      expect(remainingChild?.parentId).toBeNull();
+      expect(await countOrphans()).toEqual({
+        taskParent: 0,
+        taskProject: 0,
+        assignee: 0,
+        dependency: 0,
+        member: 0,
+      });
+    });
+
+    it("親が古く削除・子が新しく削除でも孤児が残らない", async () => {
+      const parent = await insertTask({ title: "親", deletedAt: daysAgo(40) });
+      await insertTask({ title: "子", parentId: parent.id, deletedAt: daysAgo(1) });
+
+      await purgeExpiredTrash(handle.db, NOW);
+
+      expect(await countOrphans()).toEqual({
+        taskParent: 0,
+        taskProject: 0,
+        assignee: 0,
+        dependency: 0,
+        member: 0,
+      });
+    });
+  });
 });

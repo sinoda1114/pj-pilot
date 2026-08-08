@@ -10,7 +10,7 @@ import { db } from "../../../../lib/db";
 import {
   getActiveProject,
   listActiveTasksByProject,
-  listDependenciesByProject,
+  listActiveDependenciesByProject,
 } from "../../../../lib/db/queries";
 import { GanttLoader } from "../../../../components/gantt/GanttLoader";
 
@@ -31,7 +31,7 @@ export default async function ProjectGanttPage({
 
   const [tasks, dependencies] = await Promise.all([
     listActiveTasksByProject(db, project.id),
-    listDependenciesByProject(db, project.id),
+    listActiveDependenciesByProject(db, project.id),
   ]);
 
   return <GanttLoader projectId={project.id} tasks={tasks} dependencies={dependencies} />;

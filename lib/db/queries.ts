@@ -7,6 +7,7 @@
 
 import type { ResultSet } from "@libsql/client";
 import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { projects, taskDependencies, tasks } from "./schema";
 import type * as schema from "./schema";
@@ -191,9 +192,44 @@ export async function getProjectScopedTask(db: Db, projectId: string, taskId: st
 /**
  * `task_dependencies` に `deleted_at` は無い（決定 D-06: タスク削除時も依存レコード自体は残す）。
  * そのため生存フィルタは不要で、単純にプロジェクト単位で全件返す。
+ *
+ * **表示用には使わないこと。** 削除済みタスクを指す依存も返るため、画面へ渡すと
+ * ゴミ箱の中のタスク ID がクライアントに露出する（`listActiveDependenciesByProject`
+ * を使う）。伝播（削除済みの後続を「スキップした」と判定するために必要）と、
+ * `deleteDependencyAction` の所属チェックだけがこちらを使う。
  */
 export async function listDependenciesByProject(db: Db, projectId: string) {
   return db.select().from(taskDependencies).where(eq(taskDependencies.projectId, projectId));
+}
+
+/**
+ * 表示用。**両端のタスクがどちらも生存している**依存だけを返す。
+ *
+ * Gantt ページはタスクを `listActiveTasksByProject`（生存のみ）で取るのに、依存だけ
+ * 全件取っていた。そのため論理削除済みタスクを指すリンクがそのまま Client Component
+ * へ渡り、①ゴミ箱の中のタスク ID が画面ソースに露出する、②SVAR に「存在しない
+ * ノードを指すリンク」が渡る、の2つが起きていた（監査で実測）。SVAR 2.7.1 は
+ * 宙吊りリンクを許容するので即座には壊れないが、リスク R-9 が想定する
+ * 「絞り込みの書き忘れ」そのものなので、表示経路だけをここで絞る。
+ */
+export async function listActiveDependenciesByProject(db: Db, projectId: string) {
+  const predecessor = alias(tasks, "predecessor");
+  const successor = alias(tasks, "successor");
+
+  const rows = await db
+    .select({ dependency: taskDependencies })
+    .from(taskDependencies)
+    .innerJoin(predecessor, eq(taskDependencies.predecessorId, predecessor.id))
+    .innerJoin(successor, eq(taskDependencies.successorId, successor.id))
+    .where(
+      and(
+        eq(taskDependencies.projectId, projectId),
+        isNull(predecessor.deletedAt),
+        isNull(successor.deletedAt),
+      ),
+    );
+
+  return rows.map((row) => row.dependency);
 }
 
 /**
