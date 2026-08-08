@@ -100,3 +100,34 @@ describe("date-only", () => {
     });
   });
 });
+
+describe("addDaysToDateOnly: 年のゼロ埋め", () => {
+  /**
+   * `toDateOnly` が年を `padStart` していないと、1000年より前へ繰り下がったときに
+   * `"999-12-31"` のような3桁年になる。`isValidDateOnly` は `^\d{4}-\d{2}-\d{2}$` なので
+   * これを不正と判定するのに、`persistPropagateResult` は検証せず DB に書き込む。
+   * 結果、そのタスクは以後フォームからも Undo からも触れなくなる（実測で確認）。
+   */
+  it("1000年より前に繰り下がっても 'YYYY-MM-DD' 形式を保つ", () => {
+    const result = addDaysToDateOnly("1000-01-01", -1);
+
+    expect(result).toBe("0999-12-31");
+    expect(isValidDateOnly(result)).toBe(true);
+  });
+
+  it("さらに繰り下がっても4桁のゼロ埋めを保つ", () => {
+    // 西暦0年は `Date.UTC` が 0〜99 を 1900年代に写す仕様のため往復せず、
+    // `isValidDateOnly` は false を返す。ここで固定したいのは
+    // 「`"0-01-26"` のような桁落ちした文字列を作らない」ことだけ。
+    expect(addDaysToDateOnly("0100-01-01", -36500)).toBe("0000-01-26");
+  });
+
+  it("繰り上がって5桁年になる場合は形式を保てないが、桁を削ったりしない", () => {
+    // 9999年超は date-only 文字列で表現できない。ここでは「静かに壊れた4桁に
+    // 丸めない」ことだけを固定する（不正値の検出は isValidDateOnly の責務）。
+    const result = addDaysToDateOnly("9999-12-31", 1);
+
+    expect(result).toBe("10000-01-01");
+    expect(isValidDateOnly(result)).toBe(false);
+  });
+});

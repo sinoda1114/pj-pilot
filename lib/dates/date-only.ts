@@ -41,7 +41,13 @@ function toUtcNoon(dateOnly: string): Date {
 }
 
 function toDateOnly(date: Date): string {
-  const year = date.getUTCFullYear();
+  // 年もゼロ埋めする。1000年より前へ繰り下がると `"999-12-31"` のような3桁年になり、
+  // `isValidDateOnly`（`^\d{4}-\d{2}-\d{2}$`）が不正と判定する文字列が出来上がる。
+  // それでも `persistPropagateResult` は検証せず DB に書き込むため、そのタスクは
+  // 以後フォームからも Undo からも触れなくなる（実測で確認）。
+  // 9999年超（5桁）は date-only 文字列では表現できないので、ここでは桁を削らず
+  // そのまま返し、検出は `isValidDateOnly` の責務とする。
+  const year = String(date.getUTCFullYear()).padStart(4, "0");
   const month = String(date.getUTCMonth() + 1).padStart(2, "0");
   const day = String(date.getUTCDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
