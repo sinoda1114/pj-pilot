@@ -1,0 +1,168 @@
+import { expect, test, type Page } from "@playwright/test";
+import { createDb, type DbHandle } from "../lib/db/client";
+import { createProject } from "../lib/projects/service";
+import { createTask } from "../lib/tasks/service";
+import { addSessionCookies, createTestUser } from "./helpers/auth";
+
+/**
+ * カンバンボードの e2e（Phase 2 M8 #45）。
+ *
+ * **D&D はキーボード操作で駆動する**（決定 P2-11）。dnd-kit は `KeyboardSensor` を
+ * 標準で持ち、Space でつかむ → 矢印で移動 → Space で確定、という離散的な
+ * イベント列で完結する。マウスの `mouse.move` を刻む方式はドラッグ判定のしきい値や
+ * アニメーション待ちに依存して flaky になりやすく、同時に a11y の実動作確認も兼ねられる
+ * ため、こちらを採る。
+ */
+
+let session: Awaited<ReturnType<typeof createTestUser>>;
+let handle: DbHandle;
+let projectId: string;
+
+test.beforeAll(async () => {
+  session = await createTestUser({ email: "e2e-board@example.com", name: "E2E Board" });
+
+  const resolvedUrl = process.env.TURSO_DATABASE_URL ?? "file:local.db";
+  handle = createDb(resolvedUrl);
+
+  const project = await createProject(
+    handle.db,
+    { userId: session.userId },
+    { name: `E2E カンバン検証用 ${Date.now()}` },
+  );
+  projectId = project.id;
+
+  // 未着手に3件だけ置く。他の列は空にしておき、「空の列へ移動できる」ことも検証する。
+  for (const [index, title] of ["ボードA", "ボードB", "ボードC"].entries()) {
+    await createTask(handle.db, { userId: session.userId }, projectId, {
+      title,
+      startDate: "2026-08-01",
+      endDate: "2026-08-05",
+      status: "todo",
+      boardOrder: index,
+    });
+  }
+});
+
+test.afterAll(() => {
+  handle.client.close();
+});
+
+test.beforeEach(async ({ context }) => {
+  await addSessionCookies(context, session.cookies);
+});
+
+/** 指定した列に並んでいるカードのタイトルを、表示順のまま返す。 */
+async function columnTitles(page: Page, status: string): Promise<string[]> {
+  const cards = page.getByTestId(`board-column-${status}`).getByTestId("board-card");
+  return (await cards.allInnerTexts()).map((text) => text.split("\n")[0]!.trim());
+}
+
+/**
+ * キーボードでカードをつかみ、指定回数だけ矢印キーを押してから確定する。
+ * dnd-kit の KeyboardSensor は Space/Enter でつかみ、矢印で移動、再度 Space/Enter で確定する。
+ *
+ * **キー入力の間に待機を入れるのが必須。** dnd-kit は矢印キーで座標を更新したあと、
+ * 次のフレームで衝突判定を走らせて `over` を決める。間を空けずに確定の Space を押すと
+ * 移動が反映される前に確定してしまい、`onDragEnd` の `over` が `active` 自身になって
+ * 「何も起きない」状態になる（実際にブラウザ上で `over === active` を観測して特定した）。
+ */
+const KEY_SETTLE_MS = 200;
+
+async function keyboardDrag(
+  page: Page,
+  cardTitle: string,
+  key: "ArrowRight" | "ArrowLeft" | "ArrowUp" | "ArrowDown",
+  times: number,
+): Promise<void> {
+  const card = page.getByTestId("board-card").filter({ hasText: cardTitle }).first();
+  await card.scrollIntoViewIfNeeded();
+  await card.focus();
+  await page.keyboard.press("Space");
+  await page.waitForTimeout(KEY_SETTLE_MS);
+  for (let i = 0; i < times; i += 1) {
+    await page.keyboard.press(key);
+    await page.waitForTimeout(KEY_SETTLE_MS);
+  }
+  await page.keyboard.press("Space");
+}
+
+test("未着手のカードを対応中へ移動でき、リロード後も保持される（列間D&D）", async ({ page }) => {
+  await page.goto(`/projects/${projectId}/board`);
+  await expect(page.getByTestId("board-column-todo")).toBeVisible();
+  expect(await columnTitles(page, "todo")).toEqual(["ボードA", "ボードB", "ボードC"]);
+
+  await keyboardDrag(page, "ボードA", "ArrowRight", 1);
+
+  await expect
+    .poll(() => columnTitles(page, "in_progress"), { timeout: 10_000 })
+    .toEqual(["ボードA"]);
+
+  // リロードしても保たれる ＝ ローカル state だけでなく DB に永続化されている
+  await page.reload();
+  await expect(page.getByTestId("board-column-in_progress")).toBeVisible();
+  expect(await columnTitles(page, "in_progress")).toEqual(["ボードA"]);
+  expect(await columnTitles(page, "todo")).toEqual(["ボードB", "ボードC"]);
+});
+
+test("同じ列の中で並び替えでき、リロード後も順序が保たれる（列内D&D）", async ({ page }) => {
+  await page.goto(`/projects/${projectId}/board`);
+  await expect(page.getByTestId("board-column-todo")).toBeVisible();
+  const before = await columnTitles(page, "todo");
+  expect(before).toEqual(["ボードB", "ボードC"]);
+
+  await keyboardDrag(page, "ボードB", "ArrowDown", 1);
+
+  await expect
+    .poll(() => columnTitles(page, "todo"), { timeout: 10_000 })
+    .toEqual(["ボードC", "ボードB"]);
+
+  await page.reload();
+  await expect(page.getByTestId("board-column-todo")).toBeVisible();
+  expect(await columnTitles(page, "todo")).toEqual(["ボードC", "ボードB"]);
+});
+
+test("タスクが1件も無い列にも移動できる（空の列がドロップ先になる）", async ({ page }) => {
+  await page.goto(`/projects/${projectId}/board`);
+  await expect(page.getByTestId("board-column-review")).toBeVisible();
+  // 確認中は空のまま
+  expect(await columnTitles(page, "review")).toEqual([]);
+
+  // 対応中（ボードA）→ 確認中 へ1つ右
+  await keyboardDrag(page, "ボードA", "ArrowRight", 1);
+
+  await expect.poll(() => columnTitles(page, "review"), { timeout: 10_000 }).toEqual(["ボードA"]);
+
+  await page.reload();
+  await expect(page.getByTestId("board-column-review")).toBeVisible();
+  expect(await columnTitles(page, "review")).toEqual(["ボードA"]);
+});
+
+test("カードをクリックすると詳細Drawerが開く", async ({ page }) => {
+  await page.goto(`/projects/${projectId}/board`);
+  await page.getByTestId("board-card").filter({ hasText: "ボードC" }).first().click();
+
+  await expect(page.getByRole("textbox", { name: "タイトル" })).toHaveValue("ボードC");
+});
+
+/**
+ * Cursor Bugbot の指摘（Medium）の回帰テスト。
+ *
+ * ボードは楽観更新のためにタスク一覧をローカル state に持つ。Drawer で保存したあと
+ * `router.refresh()` でサーバー側は取り直されるが、ローカル state を新しい props と
+ * 同期していないと、DB は更新済みなのにカードは古いタイトルのまま残る。
+ */
+test("Drawerで編集して保存すると、カードの表示も更新される", async ({ page }) => {
+  await page.goto(`/projects/${projectId}/board`);
+  await page.getByTestId("board-card").filter({ hasText: "ボードC" }).first().click();
+
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "タスク詳細" })).toBeVisible();
+  await dialog.getByLabel("タイトル").fill("ボードC（更新済み）");
+  await dialog.getByRole("button", { name: "保存" }).click();
+  await expect(dialog).toBeHidden();
+
+  // リロードせずに、その場のカード表示が更新されること
+  await expect(
+    page.getByTestId("board-card").filter({ hasText: "ボードC（更新済み）" }),
+  ).toBeVisible({ timeout: 10_000 });
+});
