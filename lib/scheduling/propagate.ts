@@ -300,10 +300,59 @@ function runPropagation(input: PropagateInput, selfAfter: DateChange): Propagate
   );
 
   return {
-    changes: [...changes, ...summaryDateChanges],
+    changes: mergeSummaryDateChanges(changes, summaryDateChanges),
     skipped,
     summaryUpdates,
   };
+}
+
+/**
+ * サマリー再計算による日付変更を `changes` へ畳み込む。
+ *
+ * 1つのタスクが「依存の後続として Δ シフトされる対象」と「動いた子を持つ祖先サマリー」を
+ * **兼ねる**ことがある（サマリーとその子の両方に依存を張れば作れる。依存作成側は
+ * 自己参照・別プロジェクト・重複・循環しか弾かない）。単純に連結すると同じ id が
+ * 2件並び、次の2つが壊れる。
+ *
+ *   - `persistPropagateResult` が同じ行を2回 UPDATE する（後勝ち）。
+ *   - `GanttView` は `changes[].before` をそのまま Undo の payload にするため、
+ *     2件目の `before`（＝Δシフト後の値。`recomputeAncestorSummaries` はシフト済みの
+ *     状態から `before` を取る）が後勝ちし、「元に戻す」を押しても**元の日付に戻らない**。
+ *
+ * そこで id で畳み込み、`before` は最初の（本当に操作前の）値を保ち、`after` だけを
+ * 再集計結果で上書きする。サマリーの日付は子から導出するのが正（決定 D-11）なので、
+ * 最終値は再集計結果を採る。
+ */
+function mergeSummaryDateChanges(
+  changes: TaskChange[],
+  summaryDateChanges: TaskChange[],
+): TaskChange[] {
+  const merged = [...changes];
+  const indexById = new Map(merged.map((change, index) => [change.id, index]));
+
+  for (const summaryChange of summaryDateChanges) {
+    const existingIndex = indexById.get(summaryChange.id);
+    const existing = existingIndex === undefined ? undefined : merged[existingIndex];
+    if (existingIndex === undefined || existing === undefined) {
+      indexById.set(summaryChange.id, merged.length);
+      merged.push(summaryChange);
+      continue;
+    }
+    merged[existingIndex] = { ...existing, after: summaryChange.after };
+  }
+
+  // 畳み込みの結果 `before === after` になる行（Δシフト後に子から再集計して元の位置へ
+  // 戻るケース）も**落とさない**。`GanttView` は `changes` をループして SVAR の楽観更新を
+  // リコンサイルするため、ここで落とすとドラッグで動かしたバーに `update-task` が飛ばず、
+  // 「画面は動いたまま・DB は元のまま」という不整合が残る（一度そう実装して退行させた）。
+  //
+  // このとき `persistPropagateResult` は start/end に同じ値を書く UPDATE を1回流す。
+  // 日付そのものは変わらないが、`updated_at` は変わる（`lib/db/schema/app.ts` の
+  // `timestamps` が `$onUpdate` を持つため、値が同一でも UPDATE のたびに更新される。
+  // Copilot の指摘を受けてスキーマ定義で確認済み）。現状 `updatedAt` を読む処理は
+  // アプリ内に無いため実害は無いが、更新日時での並び替え・同期・監査を入れる際は
+  // 「日付が変わっていないのに更新扱いになる行がある」点に注意すること。
+  return merged;
 }
 
 /** タスクをドラッグで Δ 日移動する（start・end とも Δ シフト）。 */
