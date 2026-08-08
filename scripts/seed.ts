@@ -1,19 +1,55 @@
 /**
  * 開発用シードスクリプト（M1 #12）。ダミーの PJ / タスク / 依存を作成する。
  *
- * 認証テーブルがまだ無い（better-auth 導入保留中。lib/db/schema/app.ts 参照）ため、
- * userId は固定のダミー文字列を使う。認証実装後、実際のユーザーに置き換わっても
- * project_members / task_assignees の userId カラムに FK 制約は無いため、
- * このスクリプト自体は変更不要。
+ * `project_members.userId` は `user.id` への外部キー制約を持つ（Better Auth導入に
+ * 伴うフォローアップ課題）ため、固定文字列ではなく実際の `user` 行を作成して
+ * その `id` を使う（`task_assignees.userId` にはFKは無いが、実データとしての
+ * 一貫性のため同じユーザーを使い回す）。実際のGoogle OAuthは経由せず、
+ * `better-auth/plugins` の `testUtils`（`e2e/helpers/auth.ts` と同じ手法）で
+ * ユーザー行だけを作成する（ログインセッションは不要なため`test.login`は呼ばない）。
+ * このテスト専用の `betterAuth` インスタンスは本番用 `lib/auth.ts` とは別に定義し、
+ * ドメイン制限フックやGoogle OAuth設定（`GOOGLE_CLIENT_ID`等）を要求しない。
  *
  * 実行前に `npm run db:migrate` でマイグレーションを当てておくこと。
  * 実行: npm run db:seed
  */
+import { eq } from "drizzle-orm";
+import { betterAuth } from "better-auth";
+import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { testUtils } from "better-auth/plugins";
 import { createDb } from "../lib/db/client";
+import * as authSchema from "../lib/db/schema/auth";
 import { projectMembers, projects, taskAssignees, taskDependencies, tasks } from "../lib/db/schema";
 
-const SEED_OWNER_USER_ID = "seed-owner";
-const SEED_MEMBER_USER_ID = "seed-member";
+async function createSeedUser(
+  db: ReturnType<typeof createDb>["db"],
+  overrides: { email: string; name: string },
+): Promise<string> {
+  // email はUNIQUE制約付き。DBをリセットせず`npm run db:seed`を再実行した場合に
+  // 毎回失敗しないよう、既存ユーザーがあれば再利用する
+  // （e2e/helpers/auth.tsのcreateTestUserと同じ方針。Cursor Bugbot指摘）。
+  const existing = await db.query.user.findFirst({
+    where: eq(authSchema.user.email, overrides.email),
+  });
+  if (existing) {
+    return existing.id;
+  }
+
+  const seedAuth = betterAuth({
+    database: drizzleAdapter(db, { provider: "sqlite", schema: authSchema }),
+    secret: "seed-script-only-not-used-for-any-real-session",
+    plugins: [testUtils()],
+  });
+
+  const ctx = await seedAuth.$context;
+  const test = ctx.test;
+  if (!test) {
+    throw new Error("testUtilsプラグインが有効になっていません");
+  }
+
+  const saved = await test.saveUser(test.createUser(overrides));
+  return saved.id;
+}
 
 async function main() {
   const resolvedUrl = process.env.TURSO_DATABASE_URL ?? "file:local.db";
@@ -41,6 +77,15 @@ async function main() {
 }
 
 async function seed(db: ReturnType<typeof createDb>["db"]) {
+  const ownerUserId = await createSeedUser(db, {
+    email: "seed-owner@example.com",
+    name: "Seed Owner",
+  });
+  const memberUserId = await createSeedUser(db, {
+    email: "seed-member@example.com",
+    name: "Seed Member",
+  });
+
   const [project] = await db
     .insert(projects)
     .values({ name: "サンプルプロジェクト", description: "開発用のダミーデータ" })
@@ -51,8 +96,8 @@ async function seed(db: ReturnType<typeof createDb>["db"]) {
   }
 
   await db.insert(projectMembers).values([
-    { projectId: project.id, userId: SEED_OWNER_USER_ID, role: "owner" },
-    { projectId: project.id, userId: SEED_MEMBER_USER_ID, role: "member" },
+    { projectId: project.id, userId: ownerUserId, role: "owner" },
+    { projectId: project.id, userId: memberUserId, role: "member" },
   ]);
 
   const [summary] = await db
@@ -132,10 +177,10 @@ async function seed(db: ReturnType<typeof createDb>["db"]) {
   }
 
   await db.insert(taskAssignees).values([
-    { taskId: design.id, userId: SEED_OWNER_USER_ID },
-    { taskId: dev.id, userId: SEED_OWNER_USER_ID },
-    { taskId: dev.id, userId: SEED_MEMBER_USER_ID },
-    { taskId: testTask.id, userId: SEED_MEMBER_USER_ID },
+    { taskId: design.id, userId: ownerUserId },
+    { taskId: dev.id, userId: ownerUserId },
+    { taskId: dev.id, userId: memberUserId },
+    { taskId: testTask.id, userId: memberUserId },
   ]);
 
   await db.insert(taskDependencies).values([
