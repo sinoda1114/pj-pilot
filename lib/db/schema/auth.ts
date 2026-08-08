@@ -23,6 +23,17 @@ export const user = sqliteTable("user", {
     .notNull(),
 });
 
+/**
+ * 注意: 以下の `onDelete: "cascade"`（`session.user_id` / `account.user_id`）は
+ * better-auth が生成したままの定義で、アプリ側スキーマ（`app.ts`）が方針として
+ * 揃えている `no action` とは食い違っている。
+ *
+ * **本番（Turso の HTTP 接続）では FK 自体が効かない**（リスク R-7）ため、この
+ * cascade も動かない。現状 `lib/auth.ts` でユーザー削除（`user.deleteUser`）を
+ * 有効化していないので不発だが、将来有効化するときは cascade に頼らず、
+ * アプリ層で `session` / `account` / `project_members` / `task_assignees` を
+ * 明示的に削除すること。
+ */
 export const session = sqliteTable(
   "session",
   {

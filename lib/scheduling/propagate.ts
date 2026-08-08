@@ -229,6 +229,17 @@ function recomputeAncestorSummaries(
     if (summary.type !== "summary") {
       continue;
     }
+    // 論理削除済みのサマリー自身も書き換えない。
+    //
+    // 子側には下の `!c.isDeleted` フィルタがあるのに、サマリー自身の生存は見て
+    // いなかった。対になる `lib/tasks/summary.ts` は `ancestor.deletedAt !== null` で
+    // 除外しており、非対称だった。「削除済みサマリーに生存する子がぶら下がる」状態が
+    // あると、ゴミ箱の中の行の日付・進捗・工数が伝播のたびに書き換わる（監査で実測）。
+    // その状態はアプリの正規経路からは作れないことも確認済みだが、2経路の条件を
+    // 揃えておく。
+    if (summary.isDeleted) {
+      continue;
+    }
     const children = (childrenOf.get(id) ?? [])
       .map((childId) => latestById.get(childId) ?? tasksById.get(childId))
       .filter((c): c is ScheduleTask => c !== undefined)
