@@ -167,6 +167,25 @@ describe("board/service", () => {
       ).rejects.toThrow(NotFoundError);
     });
 
+    it("論理削除済みプロジェクトのタスクは動かせない（NotFoundError）", async () => {
+      // PJ の削除は owner 限定だが（決定 D-15）、`deleteProject` は
+      // `projects.deleted_at` を立てるだけで配下タスクには触れない。PJ の生存を
+      // 見ないと、owner が消して画面から見えなくなった PJ のカードを誰でも
+      // 動かし続けられる。他の Server Action と条件を揃える。
+      const a = await insertTask({ title: "A" });
+      await handle.db
+        .update(projects)
+        .set({ deletedAt: new Date() })
+        .where(eq(projects.id, projectId));
+
+      await expect(
+        moveTaskOnBoard(handle.db, SESSION, projectId, a.id, "done", 0),
+      ).rejects.toThrow(NotFoundError);
+
+      const [unchanged] = await handle.db.select().from(tasks).where(eq(tasks.id, a.id));
+      expect(unchanged?.status).toBe("todo");
+    });
+
     it("未ログインは UnauthorizedError を投げる", async () => {
       const a = await insertTask({ title: "A" });
 

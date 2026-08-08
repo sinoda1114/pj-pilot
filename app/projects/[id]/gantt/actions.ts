@@ -89,6 +89,28 @@ async function runPropagation(
 
     const result = kind === "move" ? moveTask(input) : resizeTaskEnd(input);
 
+    // 「終了日 ≧ 開始日」は全 CRUD 経路が守っている不変条件（`lib/tasks/service.ts` の
+    // `assertValidDateRange`）。リサイズは終了日だけを Δ シフトするため、大きく縮める
+    // 値を渡すと逆転した日付をそのまま書き込めてしまう（実測: -30 で
+    // 2026-08-10〜2026-07-13）。SVAR 側にバー幅の clamp があるため Gantt の UI からは
+    // 起こせないが、Server Action は直接呼べる公開エンドポイントなので、
+    // `deltaDays` の範囲チェックと同じ趣旨でここでも守る。
+    // 逆転データが入ると Gantt の描画と伝播計算が壊れ、フォームは「終了日は開始日以降」
+    // で弾くため UI からは直せなくなる。
+    // 判定は「この操作が新たに逆転を作ったか」に限る。`after` が逆転している行を
+    // 一律で弾くと、旧バグ等で**既に**逆転している行が1つでもあるだけで、そこへ伝播する
+    // 無関係なタスクのドラッグまで全部失敗し、しかも逆転行自身の移動も拒否されるため
+    // Gantt から修復できなくなる（/code-review の指摘。再現も確認した）。
+    // Δ シフトは逆転の幅を変えないので、`before` が既に逆転している行は素通ししてよい。
+    const newlyInverted = result.changes.find(
+      (change) =>
+        change.before.endDate >= change.before.startDate &&
+        change.after.endDate < change.after.startDate,
+    );
+    if (newlyInverted) {
+      throw new ValidationError("終了日は開始日以降である必要があります");
+    }
+
     await persistPropagateResult(db, result);
 
     revalidatePath(`/projects/${projectId}/gantt`);
@@ -145,15 +167,32 @@ export async function undoDateChangesAction(
     // 規約に沿って取得したタスク一覧と突き合わせる。
     const dbTasks = await listAllTasksByProject(db, projectId);
     const validTaskIds = new Set(dbTasks.map((t) => t.id));
+    // 不正な入力（他プロジェクトの ID・壊れた日付・逆転した日付）は payload 全体を拒否する。
+    // 終了日 ≧ 開始日 は全経路で守っている不変条件（`lib/tasks/service.ts` の
+    // `assertValidDateRange`）。ここだけ抜けていると逆転した日付を注入され、Gantt の
+    // 描画と伝播計算が壊れたうえ、フォームが弾くので UI からは直せなくなる。
     const isInvalid = changes.some(
-      (c) => !validTaskIds.has(c.id) || !isValidDateOnly(c.startDate) || !isValidDateOnly(c.endDate),
+      (c) =>
+        !validTaskIds.has(c.id) ||
+        !isValidDateOnly(c.startDate) ||
+        !isValidDateOnly(c.endDate) ||
+        c.endDate < c.startDate,
     );
     if (isInvalid) {
       throw new ValidationError("元に戻す内容が不正です");
     }
 
+    // 削除済みタスクは「拒否」ではなく「除外」する。`listAllTasksByProject` は削除済みも
+    // 返すため（伝播が「後続が削除済みか」を見るために必要）、絞らないとゴミ箱の中の
+    // タスクの日付まで書き換わる。一方でドラッグ確定から「元に戻す」を押すまでの間に
+    // 別の誰かが1件削除しただけで payload 全体を弾くと、他の正常なタスクまで戻せなくなる
+    // （/code-review の指摘）。ゴミ箱の中のタスクの日付を戻しても意味がないので、
+    // 該当分だけ落として残りを戻す。
+    const deletedIds = new Set(dbTasks.filter((t) => t.deletedAt !== null).map((t) => t.id));
+    const applicable = changes.filter((c) => !deletedIds.has(c.id));
+
     await persistPropagateResult(db, {
-      changes: changes.map((c) => ({
+      changes: applicable.map((c) => ({
         id: c.id,
         before: { startDate: c.startDate, endDate: c.endDate },
         after: { startDate: c.startDate, endDate: c.endDate },
@@ -162,7 +201,7 @@ export async function undoDateChangesAction(
       summaryUpdates: [],
     });
 
-    for (const change of changes) {
+    for (const change of applicable) {
       await recomputeAndPersistAncestorSummaries(db, change.id);
     }
 

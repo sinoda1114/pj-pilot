@@ -92,6 +92,14 @@ export async function moveTaskOnBoard(
   }
 
   await db.transaction(async (tx) => {
+    // PJ の生存を確認する。`findBoardTask` は `tasks.project_id` しか見ないため、
+    // これが無いと owner が論理削除した PJ（`deleteProject` は配下タスクに触れない）の
+    // カードを誰でも動かし続けられる。他の Server Action と条件を揃える。
+    const project = await getActiveProject(tx, projectId);
+    if (!project) {
+      throw new NotFoundError("プロジェクトが見つかりません");
+    }
+
     const task = await findBoardTask(tx, projectId, taskId);
     const fromStatus = task.status;
 
