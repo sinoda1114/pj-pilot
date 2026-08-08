@@ -338,3 +338,71 @@ test("通常タスクを動かすと、サマリーは子から再計算され�
   const rows = (await grid.innerText()).split("\n").map((line) => line.trim());
   expect(rows[rows.indexOf("SD親サマリー") + 1]).toBe(rows[rows.indexOf("SD子A") + 1]);
 });
+
+/**
+ * 子をドラッグして確定させた**直後**にサマリーを掴んだ場合の巻き戻し先（Cursor Bugbot 指摘）。
+ *
+ * 巻き戻しの権威データに `tasks` prop（サーバから渡る値）を使うと、`revalidatePath` の
+ * 結果が返る前にサマリーを掴んだ場合、確定済みの子だけがドラッグ前の日付へ戻ってしまい、
+ * サマリードラッグ拒否が「画面と DB の食い違い」を自分で作る。そのため巻き戻し先は
+ * SVAR の内部状態（`api.getTask`）から取っている。
+ *
+ * 再検証が返る前という時間窓を Playwright から決定的に作るのは難しいため、ここでは
+ * 「子を動かした後にサマリーを掴んでも、子は動かした先に留まる」という結果側の
+ * 不変条件で押さえる。
+ */
+test("子を動かした直後にサマリーを掴んでも、子は動かした先に留まる（Issue #50）", async ({
+  page,
+}) => {
+  await page.goto(`/projects/${summaryProjectId}/gantt`);
+  await page.locator(".wx-gantt").waitFor();
+
+  const grid = page.locator(".wx-grid");
+  const childBar = page.locator(".wx-bar.wx-task").first();
+  const childBox = await childBar.boundingBox();
+  if (!childBox) throw new Error("子タスクバーの座標が取得できません");
+
+  const startedAt = (await grid.innerText())
+    .split("\n")
+    .map((line) => line.trim())
+    .reduce((acc, line, i, all) => (all[i - 1] === "SD子A" ? line : acc), "");
+
+  await page.mouse.move(childBox.x + childBox.width / 2, childBox.y + childBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(childBox.x + childBox.width / 2 + 100, childBox.y + childBox.height / 2, {
+    steps: 10,
+  });
+  await page.mouse.up();
+
+  await expect(page.getByText(/件のタスクを移動しました/)).toBeVisible({ timeout: 10_000 });
+
+  // 子ドラッグ確定後の位置を記録し、続けてサマリーを掴む。
+  const movedBox = (await childBar.boundingBox())!;
+  const summaryBar = page.locator(".wx-bar.wx-summary").first();
+  const summaryBox = (await summaryBar.boundingBox())!;
+  await page.mouse.move(summaryBox.x + summaryBox.width / 2, summaryBox.y + summaryBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    summaryBox.x + summaryBox.width / 2 + 200,
+    summaryBox.y + summaryBox.height / 2,
+    { steps: 10 },
+  );
+  await page.mouse.up();
+
+  await expect(page.getByText("サマリーの期間は子タスクから自動で決まります")).toBeVisible({
+    timeout: 10_000,
+  });
+
+  // 子は「動かした先」に留まる。ドラッグ前の位置へ戻っていたら巻き戻し先が古い。
+  await expect
+    .poll(async () => Math.round(((await childBar.boundingBox())?.x ?? 0) - movedBox.x), {
+      timeout: 10_000,
+    })
+    .toBe(0);
+
+  const after = (await grid.innerText()).split("\n").map((line) => line.trim());
+  const childStart = after[after.indexOf("SD子A") + 1];
+  expect(childStart).not.toBe(startedAt);
+  // サマリーは子から導出されるので、子の開始日と一致したまま。
+  expect(after[after.indexOf("SD親サマリー") + 1]).toBe(childStart);
+});

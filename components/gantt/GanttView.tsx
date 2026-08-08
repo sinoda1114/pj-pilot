@@ -466,18 +466,27 @@ export function GanttView({ projectId, tasks, dependencies }: GanttViewProps) {
                 // **`false` を返すだけでは足りない。** SVAR はドラッグ中にバーの座標を
                 // 既に書き換えており（サマリーの場合は子孫のバーも一緒に動く）、拒否しても
                 // 視覚位置が戻らず画面と DB が食い違う（実測: 100px ずれたまま）。
-                // サーバ確定失敗時と同じ手順で、権威データ（`tasks` prop）から
-                // サマリー自身と全子孫の位置を明示的に戻す。
+                // サーバ確定失敗時と同じ手順で、サマリー自身と全子孫の位置を明示的に戻す。
+                //
+                // 戻す値は `api.getTask` から取る。`intercept` 時点では今回のドラッグが
+                // まだ内部状態に適用されていない（下の `before` と同じ理由）ため、これが
+                // 「ドラッグ直前の値」になる。`tasks` prop 由来の `taskRowsRef` を使うと、
+                // 直前に子をドラッグして確定した直後（`revalidatePath` が返る前）に
+                // サマリーを掴んだ場合、その子だけ確定前の日付へ巻き戻ってしまい、
+                // まさに防ごうとしている画面と DB の食い違いを作る（Cursor Bugbot 指摘）。
+                // SVAR の内部状態はドラッグ確定時に更新され、サーバ確定に失敗したときは
+                // `applyDragChange` が巻き戻すので、常に DB と一致している。
                 const target = api.getTask(ev.id);
                 if (target?.type === "summary") {
+                  // 親子構造だけは prop 由来で引く（日付と違い、ドラッグでは変わらない）。
                   const rows = taskRowsRef.current;
                   for (const id of [String(ev.id), ...descendantIdsOf(rows, String(ev.id))]) {
-                    const authoritative = rows.find((t) => t.id === id);
-                    if (!authoritative) {
+                    const authoritative = api.getTask(id);
+                    if (!authoritative?.start || !authoritative?.end) {
                       continue;
                     }
-                    const start = toGanttStartDate(authoritative.startDate);
-                    const end = toGanttEndDate(authoritative.endDate);
+                    const start = authoritative.start;
+                    const end = authoritative.end;
                     // 同じ値を書いても SVAR は「変化なし」とみなして座標を再計算しない
                     // （実測でバーがずれたまま残った）。いったん別の値を書いてから
                     // 正しい値に戻し、再計算を強制する。
