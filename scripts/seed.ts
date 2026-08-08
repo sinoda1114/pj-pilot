@@ -13,6 +13,7 @@
  * 実行前に `npm run db:migrate` でマイグレーションを当てておくこと。
  * 実行: npm run db:seed
  */
+import { eq } from "drizzle-orm";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { testUtils } from "better-auth/plugins";
@@ -24,6 +25,16 @@ async function createSeedUser(
   db: ReturnType<typeof createDb>["db"],
   overrides: { email: string; name: string },
 ): Promise<string> {
+  // email はUNIQUE制約付き。DBをリセットせず`npm run db:seed`を再実行した場合に
+  // 毎回失敗しないよう、既存ユーザーがあれば再利用する
+  // （e2e/helpers/auth.tsのcreateTestUserと同じ方針。Cursor Bugbot指摘）。
+  const existing = await db.query.user.findFirst({
+    where: eq(authSchema.user.email, overrides.email),
+  });
+  if (existing) {
+    return existing.id;
+  }
+
   const seedAuth = betterAuth({
     database: drizzleAdapter(db, { provider: "sqlite", schema: authSchema }),
     secret: "seed-script-only-not-used-for-any-real-session",
