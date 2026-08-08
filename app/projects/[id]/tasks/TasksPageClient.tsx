@@ -16,6 +16,8 @@ import type { InferSelectModel } from "drizzle-orm";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import type { tasks } from "../../../../lib/db/schema";
+import { todayInTimeZone } from "../../../../lib/dates/date-only";
+import { buildCsvFileName, toCsv, withUtf8Bom, type CsvColumn } from "../../../../lib/export/csv";
 import { priorityLabel, statusLabel } from "../../../../lib/labels";
 import { TaskDrawer } from "../../../../components/tasks/TaskDrawer";
 
@@ -39,6 +41,61 @@ const PRIORITY_COLORS: Record<Priority, string> = {
   high: "orange",
   urgent: "red",
 };
+
+/**
+ * CSV のファイル名に入れる日付を求めるタイムゾーン。
+ * Vercel のサーバーは UTC で動くが、ここはクライアント（利用者の端末時刻）で
+ * 実行される。どちらであっても日本時間の日付になるよう明示する（決定 P2-08 と同じ理由）。
+ */
+const CSV_TIME_ZONE = "Asia/Tokyo";
+
+/** 担当者が複数いる場合の区切り。カンマだと CSV の区切りと紛らわしいのでスラッシュにする。 */
+const ASSIGNEE_SEPARATOR = " / ";
+
+/**
+ * CSV の列定義。画面の列（タイトル/ステータス/優先度/担当者/開始日/終了日/進捗）と
+ * 同じ内容を出す。ステータス・優先度は DB の英字 enum ではなく `lib/labels.ts` の
+ * 日本語ラベルで出力する（決定 D-17〜D-19: 画面に DB 値を出さない方針を CSV にも通す）。
+ *
+ * 進捗は `50%` ではなく `50` を出す。Excel や後段の集計で数値として扱えるようにするため。
+ */
+function buildTaskCsvColumns(assigneesByTaskId: Record<string, string[]>): CsvColumn<Task>[] {
+  return [
+    { header: "タイトル", value: (task) => task.title },
+    { header: "ステータス", value: (task) => statusLabel(task.status) },
+    { header: "優先度", value: (task) => priorityLabel(task.priority) },
+    { header: "開始日", value: (task) => task.startDate },
+    { header: "終了日", value: (task) => task.endDate },
+    { header: "進捗", value: (task) => task.progress },
+    {
+      header: "担当者",
+      value: (task) => (assigneesByTaskId[task.id] ?? []).join(ASSIGNEE_SEPARATOR),
+    },
+  ];
+}
+
+/**
+ * CSV 文字列をファイルとしてダウンロードさせる。
+ *
+ * 一覧のデータはすでにクライアント側にあるため、専用の API エンドポイントは作らず
+ * Blob と `URL.createObjectURL` で完結させる（サーバーに同じ取得・整形処理を
+ * 二重に持たせない）。生成した object URL は必ず `revokeObjectURL` で解放する。
+ * 解放を次のイベントループに回しているのは、`click()` の直後に同期的に解放すると
+ * ブラウザによってはダウンロード開始前に URL が無効化されうるため。
+ * アンカーを一度 DOM に挿入するのは、切り離した要素の `click()` を無視する
+ * ブラウザ（Firefox）があるため。
+ */
+function downloadCsvFile(fileName: string, csv: string): void {
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 
 type DrawerState = { mode: "create" } | { mode: "edit"; task: Task };
 
@@ -155,6 +212,17 @@ export function TasksPageClient({ projectId, tasks, assigneesByTaskId }: TasksPa
     },
   ];
 
+  /**
+   * 「いま画面に見えている行」（フィルター・ソート適用後の `records`）をそのまま出す。
+   * 全件を出さないのは、絞り込んだ結果を共有・報告に使うのが自然な流れのため。
+   * Excel で開かれる前提なので BOM を付ける（無いと日本語が文字化けする）。
+   */
+  function handleDownloadCsv() {
+    const csv = toCsv(records, buildTaskCsvColumns(assigneesByTaskId));
+    const fileName = buildCsvFileName("tasks", todayInTimeZone(CSV_TIME_ZONE));
+    downloadCsvFile(fileName, withUtf8Bom(csv));
+  }
+
   function handleDrawerClose() {
     setDrawerState(null);
   }
@@ -191,7 +259,18 @@ export function TasksPageClient({ projectId, tasks, assigneesByTaskId }: TasksPa
             w={180}
           />
         </Group>
-        <Button onClick={() => setDrawerState({ mode: "create" })}>新規タスク作成</Button>
+        <Group>
+          {/* 表示中の行が 0 件のときはヘッダーだけの CSV になり意味がないため押させない。 */}
+          <Button
+            variant="default"
+            onClick={handleDownloadCsv}
+            disabled={records.length === 0}
+            data-testid="tasks-csv-download"
+          >
+            CSVダウンロード
+          </Button>
+          <Button onClick={() => setDrawerState({ mode: "create" })}>新規タスク作成</Button>
+        </Group>
       </Group>
 
       {/*
@@ -223,7 +302,7 @@ export function TasksPageClient({ projectId, tasks, assigneesByTaskId }: TasksPa
       />
 
       <TaskDrawer
-        key={drawerState?.mode === "edit" ? drawerState.task.id : drawerState?.mode ?? "closed"}
+        key={drawerState?.mode === "edit" ? drawerState.task.id : (drawerState?.mode ?? "closed")}
         opened={drawerState !== null}
         mode={drawerState?.mode ?? "create"}
         projectId={projectId}
