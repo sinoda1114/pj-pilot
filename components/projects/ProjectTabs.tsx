@@ -13,6 +13,7 @@ import { usePathname } from "next/navigation";
 
 const TABS = [
   { segment: "tasks", label: "タスク" },
+  { segment: "board", label: "ボード" },
   { segment: "gantt", label: "Gantt" },
   { segment: "trash", label: "ゴミ箱" },
   { segment: "settings", label: "設定" },

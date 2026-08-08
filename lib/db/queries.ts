@@ -6,7 +6,7 @@
  */
 
 import type { ResultSet } from "@libsql/client";
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { projects, taskDependencies, tasks } from "./schema";
 import type * as schema from "./schema";
@@ -89,6 +89,25 @@ export async function listActiveTasksByProject(db: Db, projectId: string) {
     .select()
     .from(tasks)
     .where(and(eq(tasks.projectId, projectId), isNull(tasks.deletedAt)));
+}
+
+/**
+ * カンバンボード用（Phase 2 §5.2）。`type = 'task'` の生存タスクのみを、
+ * 列内の表示順（`board_order` 昇順）で返す。
+ *
+ * `summary` は子の集計行なので二重計上になり、`milestone` は決定 D-12 により
+ * Phase 1 の UI から作成できず実データが存在しないため、どちらも除外する（決定 P2-02）。
+ *
+ * 第2ソートキーに `id` を置くのは、`board_order` が同値になった場合
+ * （並行更新の隙間や、バックフィル前のデータが紛れた場合）でも描画順が揺れないようにするため。
+ * React の `key` の並びが安定し、ドラッグ中のちらつきを防ぐ。
+ */
+export async function listActiveBoardTasksByProject(db: Db, projectId: string) {
+  return db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.projectId, projectId), eq(tasks.type, "task"), isNull(tasks.deletedAt)))
+    .orderBy(asc(tasks.boardOrder), asc(tasks.id));
 }
 
 /**
