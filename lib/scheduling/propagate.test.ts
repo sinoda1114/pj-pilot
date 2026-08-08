@@ -645,6 +645,142 @@ describe("aggregateSummaryValues: 境界値（Devin Review指摘の反映）", (
   });
 });
 
+describe("moveTask: type が summary でない祖先は書き換えない（Issue #51）", () => {
+  /**
+   * 再集計の対象選択を `lib/tasks/summary.ts` と揃えるための回帰テスト。
+   *
+   * `summary.ts`（タスク CRUD 経由の再集計）は `ancestor.type !== "summary"` の祖先を
+   * 書き換えない。一方こちらは型を見ずに全祖先を再集計していたため、WBS で
+   * インデントして子を持っただけの通常タスク（`indentTask` は親の `type` を変えない。
+   * そもそも `type: "summary"` を設定する本番経路が存在しない）に対して、
+   * **無関係なタスクをドラッグしただけで日付・進捗・工数が上書き**されていた。
+   */
+  function buildPlainParentCase() {
+    const tasks = [
+      task({ id: "X", startDate: "2026-01-01", endDate: "2026-01-05" }),
+      task({
+        id: "P",
+        type: "task", // summary ではない。利用者が P 自身に値を入力している。
+        startDate: "2026-03-01",
+        endDate: "2026-03-31",
+        progress: 80,
+        estimatedHours: 40,
+        actualHours: 30,
+      }),
+      task({ id: "C1", parentId: "P", startDate: "2026-02-01", endDate: "2026-02-10" }),
+    ];
+    return moveTask({
+      taskId: "X",
+      deltaDays: 3,
+      tasks,
+      dependencies: [dep("X", "C1")],
+      dependencySyncEnabled: true,
+    });
+  }
+
+  it("通常タスクの親は日付を書き換えられない", () => {
+    const result = buildPlainParentCase();
+
+    expect(result.changes.find((c) => c.id === "P")).toBeUndefined();
+    // 子と操作対象は通常どおり動く
+    expect(result.changes.map((c) => c.id).sort()).toEqual(["C1", "X"]);
+  });
+
+  it("通常タスクの親は進捗・工数を書き換えられない", () => {
+    const result = buildPlainParentCase();
+
+    expect(result.summaryUpdates).toEqual([]);
+  });
+
+  it("論理削除済みの子は summary の集計に混ざらない", () => {
+    // 伝播ロジックには削除済みタスクも渡ってくる（`listAllTasksByProject` は
+    // 削除済みを含む。後続が削除済みかを見て枝を打ち切るために必要）。
+    // 一方 `lib/tasks/summary.ts` は `listActiveChildren`（生存のみ）で集計するため、
+    // ここで削除済みの子を混ぜると2経路の結果が食い違い、ドラッグと「元に戻す」で
+    // 同じ summary の日付・工数が行き来してしまう。
+    const tasks = [
+      task({ id: "X", startDate: "2026-01-01", endDate: "2026-01-05" }),
+      task({ id: "S", type: "summary", startDate: "2026-02-01", endDate: "2026-02-10" }),
+      task({
+        id: "C1",
+        parentId: "S",
+        startDate: "2026-02-01",
+        endDate: "2026-02-10",
+        progress: 50,
+        estimatedHours: 10,
+        actualHours: 4,
+      }),
+      // 削除済みの子。集計に混ざると工数が 10→30 に膨らみ、終了日も 12-31 へ伸びる。
+      task({
+        id: "C2",
+        parentId: "S",
+        startDate: "2026-02-01",
+        endDate: "2026-12-31",
+        progress: 0,
+        estimatedHours: 20,
+        actualHours: 8,
+        isDeleted: true,
+      }),
+    ];
+    const result = moveTask({
+      taskId: "X",
+      deltaDays: 3,
+      tasks,
+      dependencies: [dep("X", "C1")],
+      dependencySyncEnabled: true,
+    });
+
+    expect(result.summaryUpdates).toEqual([
+      { id: "S", progress: 50, estimatedHours: 10, actualHours: 4 },
+    ]);
+    expect(result.changes.find((c) => c.id === "S")?.after).toEqual({
+      startDate: "2026-02-04",
+      endDate: "2026-02-13",
+    });
+  });
+
+  it("type が summary の祖先は従来どおり再集計される", () => {
+    // 上のガードで summary まで巻き添えにしていないことを固定する。
+    const tasks = [
+      task({ id: "X", startDate: "2026-01-01", endDate: "2026-01-05" }),
+      task({
+        id: "S",
+        type: "summary",
+        startDate: "2026-03-01",
+        endDate: "2026-03-31",
+        progress: 80,
+        estimatedHours: 40,
+        actualHours: 30,
+      }),
+      task({
+        id: "C1",
+        parentId: "S",
+        startDate: "2026-02-01",
+        endDate: "2026-02-10",
+        progress: 50,
+        estimatedHours: 10,
+        actualHours: 4,
+      }),
+    ];
+    const result = moveTask({
+      taskId: "X",
+      deltaDays: 3,
+      tasks,
+      dependencies: [dep("X", "C1")],
+      dependencySyncEnabled: true,
+    });
+
+    expect(result.changes.find((c) => c.id === "S")).toEqual({
+      id: "S",
+      before: { startDate: "2026-03-01", endDate: "2026-03-31" },
+      after: { startDate: "2026-02-04", endDate: "2026-02-13" },
+    });
+    expect(result.summaryUpdates).toEqual([
+      { id: "S", progress: 50, estimatedHours: 10, actualHours: 4 },
+    ]);
+  });
+});
+
 describe("moveTask: 同一タスクが「Δシフト対象」と「変更された子の祖先」を兼ねる場合", () => {
   /**
    * サマリー P（子 C1・C2）と、P・C1 の両方に依存を張った X を用意する。

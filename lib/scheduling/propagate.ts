@@ -194,9 +194,31 @@ function recomputeAncestorSummaries(
     if (!summary) {
       continue;
     }
+    // `type` が summary でない祖先は書き換えない。
+    //
+    // 再集計の経路はここ（ドラッグの伝播）と `lib/tasks/summary.ts` の2つあり、
+    // 計算式は `aggregateSummaryValues` に共通化されているが、**対象の選び方**は
+    // 揃っていなかった。`summary.ts` は同じガードを持つのに対し、こちらは型を見ずに
+    // 全祖先を再集計していたため、WBS でインデントして子を持っただけの通常タスク
+    // （`indentTask` は親の `type` を変えず、そもそも `type: "summary"` を設定する
+    // 本番経路が無い）に対して、無関係なタスクをドラッグしただけで日付・進捗・工数が
+    // 上書きされ、そのまま永続化されていた（Issue #51）。
+    //
+    // なお「親タスクをどうやって summary にするか」は仕様判断が要るため別課題
+    // （Issue #51 の後半）。ここでは2経路の挙動を揃えて破壊を止めることに絞る。
+    if (summary.type !== "summary") {
+      continue;
+    }
     const children = (childrenOf.get(id) ?? [])
       .map((childId) => latestById.get(childId) ?? tasksById.get(childId))
-      .filter((c): c is ScheduleTask => c !== undefined);
+      .filter((c): c is ScheduleTask => c !== undefined)
+      // 論理削除済みの子は集計に混ぜない。
+      // 伝播ロジックには削除済みタスクも渡ってくる（`listAllTasksByProject` は
+      // 削除済みを含む。後続が削除済みかを見て枝を打ち切るために必要）。一方
+      // `lib/tasks/summary.ts` は `listActiveChildren`（生存のみ）で集計するため、
+      // ここで混ぜると2経路の結果が食い違い、ドラッグと「元に戻す」で同じ summary の
+      // 日付・工数が行き来する。
+      .filter((c) => !c.isDeleted);
 
     if (children.length === 0) {
       continue;
