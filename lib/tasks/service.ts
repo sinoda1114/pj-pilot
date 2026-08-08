@@ -21,6 +21,7 @@ import {
 import { tasks } from "../db/schema";
 import type * as schema from "../db/schema";
 import { NotFoundError, ValidationError } from "../errors";
+import { markAsSummary, unmarkSummaryIfChildless } from "./summary-marker";
 
 type TaskRow = InferInsertModel<typeof tasks>;
 
@@ -212,6 +213,12 @@ export async function createTask(
       throw new Error("タスクの作成に失敗しました");
     }
 
+    // 子ができた親に `type='summary'` の印を付ける（Issue #59）。決定 D-11 の集計は
+    // `type === "summary"` の行しか処理しないため、ここが漏れると「生存する子を持つ
+    // `task`」が生まれ、日付・進捗・工数の自動集計が静かに効かなくなる。
+    // INSERT と同じトランザクション内で行い、片方だけ反映された状態を残さない。
+    await markAsSummary(tx, task.parentId);
+
     return task;
   });
 }
@@ -224,42 +231,61 @@ export async function updateTask(
 ) {
   requireLogin(session);
 
-  const existing = await getActiveTask(db, taskId);
-  if (!existing) {
-    throw new NotFoundError("タスクが見つかりません");
-  }
-
-  assertValidDateRange(input.startDate ?? existing.startDate, input.endDate ?? existing.endDate);
-
-  if (input.parentId !== undefined && input.parentId !== null) {
-    if (input.parentId === taskId) {
-      throw new ValidationError("タスクは自分自身を親にできません");
+  // 親の付け替えは「タスク本体の UPDATE」と「新旧の親の `type` の付け替え」の
+  // 最大3行を書き換える。トランザクションでまとめないと、途中で失敗したときに
+  // 「子が0件なのに summary」「子が居るのに task」という中途半端な木が残る。
+  // 検証と書き込みの間に別リクエストが割り込む TOCTOU（createTask / deleteTask /
+  // indentTask と同じ）への対策も兼ねる。
+  return db.transaction(async (tx) => {
+    const existing = await getActiveTask(tx, taskId);
+    if (!existing) {
+      throw new NotFoundError("タスクが見つかりません");
     }
 
-    const parent = await getActiveTask(db, input.parentId);
-    if (!parent) {
-      throw new NotFoundError("親タスクが見つかりません");
+    assertValidDateRange(input.startDate ?? existing.startDate, input.endDate ?? existing.endDate);
+
+    if (input.parentId !== undefined && input.parentId !== null) {
+      if (input.parentId === taskId) {
+        throw new ValidationError("タスクは自分自身を親にできません");
+      }
+
+      const parent = await getActiveTask(tx, input.parentId);
+      if (!parent) {
+        throw new NotFoundError("親タスクが見つかりません");
+      }
+      if (parent.projectId !== existing.projectId) {
+        throw new ValidationError("親タスクは同じプロジェクト内である必要があります");
+      }
+      if (await isDescendantOf(tx, taskId, input.parentId)) {
+        throw new ValidationError("子孫タスクを親にすると循環参照になります");
+      }
     }
-    if (parent.projectId !== existing.projectId) {
-      throw new ValidationError("親タスクは同じプロジェクト内である必要があります");
+
+    const updates = pickEditableTaskFields(input);
+    if (Object.keys(updates).length === 0) {
+      return existing;
     }
-    if (await isDescendantOf(db, taskId, input.parentId)) {
-      throw new ValidationError("子孫タスクを親にすると循環参照になります");
+
+    const [updated] = await tx.update(tasks).set(updates).where(eq(tasks.id, taskId)).returning();
+
+    if (!updated) {
+      throw new Error("タスクの更新に失敗しました");
     }
-  }
 
-  const updates = pickEditableTaskFields(input);
-  if (Object.keys(updates).length === 0) {
-    return existing;
-  }
+    // 親が実際に変わったときだけ印を付け替える（Issue #59）。`input.parentId` の
+    // 有無ではなく更新後の実値と比較するのは、同じ親を指定し直しただけの更新で
+    // 余計な UPDATE を撃たないため（`updatedAt` は `$onUpdate` で毎回動く）。
+    if (updated.parentId !== existing.parentId) {
+      // 新しい親は子を持つようになったので summary に。ルート直下へ移した場合
+      // （`parentId: null`）は `markAsSummary` 側が no-op になる。
+      await markAsSummary(tx, updated.parentId);
+      // 元の親は最後の子が抜けたなら `task` に戻す。他に子が残っていれば
+      // `unmarkSummaryIfChildless` 側で何もしない。
+      await unmarkSummaryIfChildless(tx, existing.parentId);
+    }
 
-  const [updated] = await db.update(tasks).set(updates).where(eq(tasks.id, taskId)).returning();
-
-  if (!updated) {
-    throw new Error("タスクの更新に失敗しました");
-  }
-
-  return updated;
+    return updated;
+  });
 }
 
 function assertValidDateRange(startDate: string, endDate: string): void {
@@ -277,7 +303,9 @@ function assertValidDateRange(startDate: string, endDate: string): void {
  * ヘルパーは使わずここで直接たどる（`lib/scheduling/propagate.ts` と同じ visited 方針）。
  */
 async function isDescendantOf(
-  db: LibSQLDatabase<typeof schema>,
+  // `updateTask` のトランザクション内から呼ぶため、`LibSQLDatabase` ではなく
+  // `tx` とも共通の基底型で受ける（`lib/db/queries.ts` の `Db` の注記と同じ理由）。
+  db: Db,
   ancestorId: string,
   candidateId: string,
 ): Promise<boolean> {
