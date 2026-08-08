@@ -111,6 +111,31 @@ export async function listActiveBoardTasksByProject(db: Db, projectId: string) {
 }
 
 /**
+ * ダッシュボード用（Phase 2 §6.4）。**全プロジェクト横断**で `type = 'task'` の
+ * 生存タスクを返す。
+ *
+ * 閲覧は全ログインユーザーに開いている（決定 D-08）ため、ユーザーによる絞り込みは
+ * 行わない。ただし**削除済みプロジェクトのタスクは除く**。プロジェクトを論理削除しても
+ * 配下のタスクの `deleted_at` が必ず立つとは限らず、タスク側だけを見ると
+ * 「消したはずの PJ のタスクがダッシュボードに出続ける」ことになるため、
+ * `projects` と結合して生存プロジェクトのものだけに絞る。
+ */
+export async function listAllActiveTaskTypeTasks(db: Db) {
+  return db
+    .select({
+      id: tasks.id,
+      projectId: tasks.projectId,
+      title: tasks.title,
+      status: tasks.status,
+      type: tasks.type,
+      endDate: tasks.endDate,
+    })
+    .from(tasks)
+    .innerJoin(projects, eq(tasks.projectId, projects.id))
+    .where(and(eq(tasks.type, "task"), isNull(tasks.deletedAt), isNull(projects.deletedAt)));
+}
+
+/**
  * 依存連動の伝播（`lib/scheduling/propagate.ts`）用。生存/削除済みを問わず
  * プロジェクトの全タスクを返す。伝播ロジックは「削除済みタスクに到達したら
  * 枝を打ち切り、その理由をトーストで通知する」（決定D-06 / §5.4）ため、
