@@ -203,6 +203,22 @@ describe("tasks/service", () => {
       expect(updated.status).toBe("in_progress");
     });
 
+    it("boardOrder は許可リストに含まれており、更新できる（Phase 2 §4.4）", async () => {
+      const task = await createTask(handle.db, SESSION, projectId, {
+        title: "T",
+        startDate: "2026-08-01",
+        endDate: "2026-08-05",
+      });
+      expect(task.boardOrder).toBe(0);
+
+      const updated = await updateTask(handle.db, SESSION, task.id, { boardOrder: 3 });
+
+      expect(updated.boardOrder).toBe(3);
+      // sortOrder（WBS階層の表示順）は別の軸。boardOrder を動かしても影響しない
+      // （決定 P2-03: 共用すると Gantt 側の並びが壊れるため列を分けている）。
+      expect(updated.sortOrder).toBe(task.sortOrder);
+    });
+
     it("更新項目が空でも例外にならない", async () => {
       const task = await createTask(handle.db, SESSION, projectId, {
         title: "T",

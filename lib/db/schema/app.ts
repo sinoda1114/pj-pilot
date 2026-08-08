@@ -118,8 +118,13 @@ export const tasks = sqliteTable(
     actualHours: real("actual_hours"),
     // 依存連動ON/OFF ②タスク単位ピン留め
     isPinned: integer("is_pinned", { mode: "boolean" }).notNull().default(false),
-    // 同一 parentId 内の表示順
+    // 同一 parentId 内の表示順（WBS階層。lib/tasks/hierarchy.ts の indent/outdent が使う）
     sortOrder: integer("sort_order").notNull().default(0),
+    // カンバンの列内の表示順（Phase 2 §4 / 決定 P2-03）。
+    // sortOrder とは別の軸で持つ。sortOrder は「同じ親を持つ兄弟の中での順」で、
+    // Gantt とタスク一覧の階層表示に使われている。共用すると、カンバンで並び替えた
+    // 瞬間に Gantt 側の階層の並びまで変わってしまうため、列を分ける。
+    boardOrder: integer("board_order").notNull().default(0),
     // 論理削除。NULL = 生存（決定 D-03）
     deletedAt: integer("deleted_at", { mode: "timestamp" }),
     ...timestamps,
@@ -127,6 +132,12 @@ export const tasks = sqliteTable(
   (table) => [
     index("tasks_project_id_deleted_at_idx").on(table.projectId, table.deletedAt),
     index("tasks_parent_id_idx").on(table.parentId),
+    // カンバンの列描画（プロジェクト単位で status ごとに board_order 順）用（Phase 2 §4.1）。
+    index("tasks_project_status_board_order_idx").on(
+      table.projectId,
+      table.status,
+      table.boardOrder,
+    ),
     // enum は TypeScript 側の型付けのみで SQL の CHECK にはならないため、
     // 生の SQL やアプリ層のバグで無効な値が入るのを DB レベルでも防ぐ（多層防御）。
     check("tasks_priority_check", sql`${table.priority} IN ('low', 'medium', 'high', 'urgent')`),

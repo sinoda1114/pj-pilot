@@ -25,7 +25,11 @@
     "db:seed": "tsx scripts/seed.ts"
   },
   "dependencies": {
+    "@dnd-kit/core": "6.3.1",
+    "@dnd-kit/sortable": "10.0.0",
+    "@dnd-kit/utilities": "3.2.2",
     "@libsql/client": "0.17.4",
+    "@mantine/charts": "9.5.1",
     "@mantine/core": "9.5.1",
     "@mantine/dates": "9.5.1",
     "@mantine/form": "9.5.1",
@@ -42,7 +46,8 @@
     "mantine-datatable": "9.4.0",
     "next": "16.3.0",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "recharts": "3.10.1"
   },
   "devDependencies": {
     "@next/env": "16.3.0",
