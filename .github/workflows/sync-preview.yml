@@ -1,0 +1,126 @@
+# preview ブランチを main へ自動追随させる（Issue #72 の再発防止）
+#
+# Preview 環境は `pj-pilot-preview.vercel.app` に固定ドメインを紐付けており（リスク R-4）、
+# そのドメインは `preview` ブランチの最新デプロイを指す。つまり `preview` が古いままだと、
+# Preview 環境だけが古いコードで動き続ける。
+#
+# 実際に事故になった。`preview` が #70（ALLOWED_EMAIL_DOMAINS のメールアドレス完全一致）を
+# 含まない状態で放置され、Preview 環境には誰もログインできなくなっていた。ビルドは通るので
+# 気づけず、認証を試して初めて分かる。「マージしたら preview にも反映する」という運用ルールで
+# 防ぐ想定だったが、まさにその運用が抜けて起きた事故なので、機構で塞ぐ。
+#
+# ただし単純な強制同期にはしない。`preview` は「未マージの変更を Preview DB で試す枠」としても
+# 使えるようにしておきたい（本番 DB を壊さずに検証するために Turso の DB を分けてある）。
+# 常に main で上書きすると、その用途を潰してしまう。
+#
+# そこで条件付きにする。
+#
+#   - `preview` が main の祖先（＝独自コミットを持たない）→ main へ早送りする
+#   - `preview` が独自コミットを持つ（＝誰かが意図して何かを載せている）→ 触らずに失敗する
+#
+# これで「意図した検証」は保護したまま、「意図しない置き去り」だけを消せる。前者は
+# fast-forward なので失うものが無く、後者は人間の意図が入っているので機械が壊してはいけない、
+# という切り分け。
+#
+# 実装は git ではなく GitHub API を使う。ref 更新 API は `force: false` のとき
+# fast-forward 以外を **サーバー側で** 拒否するため、上の条件をこちらで実装して間違える
+# 余地が無い。チェックアウトも不要になる（履歴の全取得が要らない）。
+name: Sync preview branch
+
+on:
+  push:
+    branches: [main]
+  # main が進んでいない状態でも手動で揃え直せるようにしておく
+  workflow_dispatch:
+
+# 連続マージで同時に走ると、古い方が後から ref を戻そうとする可能性がある。
+# cancel-in-progress は付けない（force: false なので巻き戻しは API 側で弾かれるが、
+# 直列化しておけば「見送り」の判定が誤って出るのも防げる）。
+concurrency:
+  group: sync-preview
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: preview を main へ早送りする（独自コミットがある場合は行わない）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # 同期先は必ず API で main を引く。github.sha は使わない。
+          # workflow_dispatch は任意のブランチから実行できるため、github.sha だと
+          # dispatch 元のブランチ先端を preview へ流し込める。preview が main と同一で
+          # そのブランチが main 起点なら compare は ahead を返し、force: false でも
+          # 正当な fast-forward として通ってしまう。つまり未マージのコードが Preview の
+          # 固定ドメインへ無警告で出る。main を明示解決すれば、この経路自体が消える。
+          main_sha="$(gh api "repos/${REPO}/commits/main" --jq '.sha')"
+          echo "main = ${main_sha}"
+
+          # 不在判定に git/ref は使わない。404 で落ちるため、403 や 5xx のような
+          # 一時的な失敗まで「preview が無い」と誤読してしまう。matching-refs は
+          # 一致が無くても 200 と空配列を返すので、不在と通信・権限エラーを区別できる。
+          matched="$(gh api "repos/${REPO}/git/matching-refs/heads/preview" --jq 'length')"
+
+          if [ "${matched}" -eq 0 ]; then
+            echo "preview ブランチが存在しないため、main の内容で作成します。"
+            gh api --method POST "repos/${REPO}/git/refs" \
+              -f "ref=refs/heads/preview" -f "sha=${main_sha}"
+            echo "preview を \`${main_sha}\` で作成しました。" >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          # base=preview / head=main から見た head の位置関係が status に入る。
+          #   identical … 同一
+          #   ahead     … main が preview の先（＝preview は main の祖先。早送り可能）
+          #   behind    … preview が main の先
+          #   diverged  … 双方に独自コミット
+          status="$(gh api "repos/${REPO}/compare/preview...${main_sha}" --jq '.status')"
+
+          case "${status}" in
+            identical)
+              echo "preview はすでに main と同一です（${main_sha}）。"
+              ;;
+            ahead)
+              # force: false なので、万一ここまでの判定が誤っていても API 側が拒否する
+              gh api --method PATCH "repos/${REPO}/git/refs/heads/preview" \
+                -f "sha=${main_sha}" -F "force=false"
+              echo "preview を \`${main_sha}\` へ早送りしました。" >> "${GITHUB_STEP_SUMMARY}"
+              ;;
+            behind|diverged)
+              # 意図して何かを載せている状態。ref は壊さない。
+              #
+              # ここを警告で済ませない理由。preview に検証用のコミットを載せたあと、その
+              # 変更が squash マージされると（このリポジトリの既定）preview と main は
+              # 恒久的に diverge する。本人は「検証は終わった」と思っているので、緑の実行に
+              # 付く ::notice は誰も見ない。結果として以後すべての同期が黙って止まり、
+              # Issue #72 と同じ「古い preview が放置される」状態に戻る。
+              #
+              # そのため失敗させる。main への push のたびに赤くなるので気づかざるを得ず、
+              # preview を揃え直せば自動で消える。検証中は赤いままになるが、それは
+              # 「preview が本番相当ではない」という事実の可視化なので許容する。
+              {
+                echo "### preview を同期しませんでした"
+                echo
+                echo "\`preview\` が \`main\` (\`${main_sha}\`) に含まれないコミットを持っています（status: \`${status}\`）。"
+                echo "検証のために意図して載せたものとみなし、ref は変更していません。"
+                echo
+                echo "検証が終わっているなら、次のコマンドで揃え直すとこの失敗は消えます。"
+                echo
+                echo '```'
+                echo "git push origin origin/main:preview --force-with-lease"
+                echo '```'
+              } >> "${GITHUB_STEP_SUMMARY}"
+              echo "::error title=preview が main に追随していません::preview に main へ未反映のコミットがあります（status: ${status}）。検証が終わっているなら preview を main へ揃え直してください。"
+              exit 1
+              ;;
+            *)
+              echo "::error title=想定外の比較結果::compare API が想定外の status を返しました: ${status}"
+              exit 1
+              ;;
+          esac
