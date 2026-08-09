@@ -677,7 +677,7 @@ Inbox / Ready / Waiting / Doing / PR / Prod Check / Done
    | `BETTER_AUTH_URL` | 本番URL | Preview固定URL | Better Auth の baseURL |
    | `GOOGLE_CLIENT_ID` | ✓ | ✓ | §10.5 |
    | `GOOGLE_CLIENT_SECRET` | ✓ | ✓ | |
-   | `ALLOWED_EMAIL_DOMAINS` | 例 `example.co.jp` | 〃 | 決定 D-07。カンマ区切りで複数可 |
+   | `ALLOWED_EMAIL_DOMAINS` | 例 `example.co.jp` / `alice@gmail.com` | 〃 | 決定 D-07。カンマ区切りで複数可。**`gmail.com` 等の共用ドメインを指定しないこと**（全 Gmail ユーザーに開く）。個人アカウント運用では `alice@gmail.com` のようにアドレス完全一致で指定する（ドメイン指定と混在可） |
    | `CRON_SECRET` | ✓ | — | ゴミ箱の定期削除エンドポイントの認証 |
    | `NEXT_PUBLIC_SITE_URL` | 本番URL | Preview固定URL | |
 
@@ -769,7 +769,7 @@ sweeper が自動で揃えるため、手動作業は不要です**（§1.1.1）
 | D-04 | 認証ライブラリ | **Better Auth**（`REQUIREMENTS.md` の Auth.js を上書き） |
 | D-05 | ゴミ箱の保持期間 | **30 日で自動物理削除**（Vercel Cron） |
 | D-06 | 論理削除タスクと依存 | **グラフから除外し伝播も切る**。依存レコードは残す |
-| D-07 | ログイン制限 | **特定ドメインのみ許可** |
+| D-07 | ログイン制限 | **特定ドメインのみ許可**。運用上の補完として、`ALLOWED_EMAIL_DOMAINS` のエントリに `@` を含めるとメールアドレス完全一致で判定する（`gmail.com` のような共用ドメインを丸ごと許可せずに個人アカウントで運用するため）|
 | D-08 | 既定の可視範囲 | **全ログインユーザーが全 PJ を閲覧可** |
 | D-09 | Δ の数え方 | **暦日**。土日は `highlightTime` でグレー表示（見た目のみ） |
 | D-10 | ステータス | **固定 4 値**（テーブル化しない） |
