@@ -19,9 +19,22 @@ pj-pilot（チーム向けの総合プロジェクト管理ツール）。**実�
 - **Better Auth 本実装** — Google OAuth 限定・`ALLOWED_EMAIL_DOMAINS` によるドメイン制限（PR #33、`docs/IMPLEMENTATION_PLAN.md` R-11）
 - **Phase 2（M7〜M9）** — カンバンボード / ダッシュボード / CSV エクスポート（PR #42〜#46、`docs/PHASE2_IMPLEMENTATION_PLAN.md`）
 
-残っているのは**外部サービス側のセットアップのみ**（Issue #4: GitHub ラベル・Project 板・
-Secret scanning、Issue #5: Vercel・Turso・Google OAuth）。いずれもローカル作業
-（詳細は `docs/LOCAL_SETUP.md`）。
+- **デプロイ基盤** — Vercel / Turso（本番・Preview で DB 分離）/ Google OAuth。稼働中（Issue #5）。
+  手順は `docs/DEPLOY_RUNBOOK.md`
+
+**2026-08-09 時点でオープンな Issue / PR は無い。** 未着手なのは本番の動作確認と Phase 3 の計画だけ
+（下記「次にやること」）。
+
+確定した運用上の判断:
+
+- **GitHub Project（板）は作らない** — Issue #4 を not planned でクローズ。Status カラムが
+  Web UI 必須で冪等化できず、実運用しない板は管理対象の水増しになるため（`repo-policy.yml` の
+  `excluded`）。タスク量が増えたら改めて作る
+- **リポジトリ設定は `sinoda1114/ci-standard` の sweeper が収束させる**（毎日 06:00 JST）。
+  ラベル・Secret scanning などを個別に `gh` で作らない。二重管理になる。標準を変えたい場合は
+  `ci-standard/repo-policy.yml` を直す（1箇所の変更が全リポジトリへ反映）
+- **`preview` ブランチは `main` へ自動追随する** — `.github/workflows/sync-preview.yml`。
+  詳細と背景（Issue #72 の事故）は `docs/DEPLOY_RUNBOOK.md`
 
 ## 確定した仕様
 
@@ -38,14 +51,16 @@ REQUIREMENTS.md に入っているもの:
 
 ## 次にやること
 
-1. **Issue #4 / #5 のローカル作業** — GitHub 初期セットアップとデプロイ基盤（Vercel / Turso /
-   Google OAuth）。手順は `docs/LOCAL_SETUP.md` が正本
-2. **デプロイ後の本番動作確認** — 実 Google アカウントでのログイン・ドメイン制限・Cron 物理削除
-3. **Phase 3 の計画** — 着手する場合は Phase 2 と同様に実装計画書を先に作る
+1. **本番の動作確認**（未実施） — 実 Google アカウントでのログイン・ドメイン制限・Cron 物理削除。
+   **ローカル作業**（クラウドからは Vercel に到達できない）
+2. **Phase 3 の計画** — **スコープは未定**。何を作るか決めるところから。決まったら Phase 2 と
+   同様に実装計画書を先に作る
 
-注意: `type:*` ラベルは **2026-08-06 時点で未作成**（`docs/handoff.md` の旧版に「作成済み」と
-あったが実態と異なった。Issue #4 参照）。`origin/HEAD` はリポジトリ設定ではなく clone ごとの
-ローカル参照なので、新しい clone では `git remote set-head origin -a` を都度実行する。
+注意: `type:*` ラベルは **存在する**。Conventional Commits に合わせた `type:feat` / `type:fix` /
+`type:refactor` / `type:perf` / `type:test` / `type:docs` / `type:chore` の7種。この文書の旧版は
+「未作成」としていたが、旧計画の命名（`type:feature` / `type:bug` / `type:ops`）で照会したための
+誤りだった。`origin/HEAD` はリポジトリ設定ではなく clone ごとのローカル参照なので、新しい clone
+では `git remote set-head origin -a` を都度実行する。
 
 ## 守るべき手続き
 
@@ -112,11 +127,20 @@ claude.ai/code のセッションは隔離されたコンテナで動く。ロ�
 
 したがって **`/project-bootstrap` はローカルで実行する。** クラウドは PR 作成までが範囲。
 
-**クラウドからローカルセッションへは連絡できる。** `ListAgents` には出ないが（クロスマシンのため
-`SendMessage` では届かない）、`list_sessions` で対象を特定し、`persistent_session_id` を指定した
-Routine を `create_trigger` → `fire_trigger` すれば、相手の会話にユーザーターンとして即時配信される。
-`ListAgents` の空振りを「経路が無い」と読み違えて手動中継を頼まないこと（実際にやった）。
+**クラウドとローカルのセッションは双方向にやりとりできる。ただし cross-session messaging
+（`ListAgents` / `SendMessage`）ではない。** 使うのは Routine で、`list_sessions` で相手を特定し、
+`persistent_session_id` を指定して `create_trigger` → `fire_trigger` する。相手の会話へ即時配信される。
 Vercel / Turso の実測など、クラウドで検証できない項目の依頼と結果回収はこの経路で完結する。
+
+`SendMessage` を使おうとしないこと。[ドキュメント](https://code.claude.com/docs/en/cross-session-messaging)
+のとおりクロスマシンは **返信のみ**（`Across machines, Claude can only reply. It can't start the
+exchange.`）で、どちらからも会話を開始できないため最初の1通が発生しない。加えてリモートのセッションは
+Remote Control 接続中しか `ListAgents` に出ない。**`ListAgents` の空振りを「経路が無い」と
+読み違えないこと**（実際に読み違えて手動中継を頼んだ）。
+
+両者の違いは届き方にある。`SendMessage` は「他セッションからのメッセージ」として届き、ユーザーの同意
+として扱われない・設定変更を指示できない、という保護がかかる。Routine は `role: "user"` の会話ターン
+として注入されるため**この保護が無く、受信側はユーザーの指示として扱う**。強い経路である点は意識する。
 
 なお**ブラウザでの動作確認はクラウドでも可能**（Chromium 同梱。Playwright の E2E・
 スクリーンショット取得とも実績あり。バージョン不一致時は
