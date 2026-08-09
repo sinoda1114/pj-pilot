@@ -109,7 +109,7 @@ M0 は既に `main` にマージ済みなので、**このタイミングで実�
 | `BETTER_AUTH_SECRET` | ✓ | ✓ | `openssl rand -base64 32`。Better Auth本体が実際にこの値でセッション署名を行うため、本番/Previewとも必ず異なる値を設定する |
 | `BETTER_AUTH_URL` | 本番URL | Preview固定URL | |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | ✓ | ✓ | §5。**Better Auth本実装済みのため必須**（未設定だとログイン導線が機能しない） |
-| `ALLOWED_EMAIL_DOMAINS` | 例 `example.co.jp` | 〃 | 決定D-07。カンマ区切りで複数可 |
+| `ALLOWED_EMAIL_DOMAINS` | 例 `example.co.jp` / `alice@gmail.com` | 〃 | 決定 D-07。カンマ区切りで複数可。**`gmail.com` 等の共用ドメインを指定しないこと**（全 Gmail ユーザーに開く）。個人アカウント運用では `alice@gmail.com` のようにアドレス完全一致で指定する（ドメイン指定と混在可） |
 | `CRON_SECRET` | ✓ | 任意 | `/api/cron/purge-trash` の認証（`app/api/cron/purge-trash/route.ts` で検証済み・実装済み） |
 | `NEXT_PUBLIC_SITE_URL` | 本番URL | Preview固定URL | |
 
@@ -187,6 +187,11 @@ npm run dev
 
 - **`ALLOWED_EMAIL_DOMAINS` 未設定に注意**: 未設定・空文字列の場合は安全側デフォルトで
   全ドメイン拒否になる（`lib/auth/domain-restriction.ts`）。ログインできない場合はまずこの値を疑う。
+- **`ALLOWED_EMAIL_DOMAINS` に共用ドメインを指定しないこと**: `gmail.com` のように
+  誰でも取得できるドメインをドメイン指定すると、**全 Gmail ユーザーがログインできる**。
+  `lib/auth/authz.ts` のとおり閲覧は全ログインユーザーに開いているため、そのまま
+  全プロジェクトが読まれる（リスク R-10）。個人アカウントで運用する場合は
+  `alice@gmail.com` のように**メールアドレス完全一致**で指定する（ドメイン指定と混在可）。
 - **`CRON_SECRET` 未設定に注意**（§3参照）。
 - リポジトリは Public。Turso トークン・Google OAuth シークレットは絶対にコミットしない
   （`.env*.local` は `.gitignore` 済みだが、コミット前に毎回 `git status` で確認する）。
