@@ -112,6 +112,12 @@ claude.ai/code のセッションは隔離されたコンテナで動く。ロ�
 
 したがって **`/project-bootstrap` はローカルで実行する。** クラウドは PR 作成までが範囲。
 
+**クラウドからローカルセッションへは連絡できる。** `ListAgents` には出ないが（クロスマシンのため
+`SendMessage` では届かない）、`list_sessions` で対象を特定し、`persistent_session_id` を指定した
+Routine を `create_trigger` → `fire_trigger` すれば、相手の会話にユーザーターンとして即時配信される。
+`ListAgents` の空振りを「経路が無い」と読み違えて手動中継を頼まないこと（実際にやった）。
+Vercel / Turso の実測など、クラウドで検証できない項目の依頼と結果回収はこの経路で完結する。
+
 なお**ブラウザでの動作確認はクラウドでも可能**（Chromium 同梱。Playwright の E2E・
 スクリーンショット取得とも実績あり。バージョン不一致時は
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/opt/pw-browsers/chromium` を指定する）。
