@@ -63,11 +63,22 @@ jobs:
           echo "main = ${main_sha}"
 
           # 不在判定に git/ref は使わない。404 で落ちるため、403 や 5xx のような
-          # 一時的な失敗まで「preview が無い」と誤読してしまう。matching-refs は
-          # 一致が無くても 200 と空配列を返すので、不在と通信・権限エラーを区別できる。
-          matched="$(gh api "repos/${REPO}/git/matching-refs/heads/preview" --jq 'length')"
+          # 一時的な失敗まで「preview が無い」と誤読してしまう。ここを取り違えると、
+          # 続く POST /git/refs が 422 Reference already exists で落ち、真因と無関係な
+          # エラーだけが残る。
+          #
+          # matching-refs も使わない。あれは **前方一致** なので、`preview` が無くても
+          # `preview2` のようなブランチがあれば length が非ゼロになり、作成をスキップした
+          # まま compare が 404 で落ちる（Cursor Bugbot 指摘。GitHub のドキュメントで
+          # 前方一致であることを確認済み）。加えて、一致ゼロのときに 200 と空配列を返すのか
+          # 404 になるのかを、このサンドボックスからは実測できなかった（api.github.com が
+          # egress ポリシーで遮断されている）。検証できない挙動に依存する設計は避ける。
+          #
+          # branches はリポジトリが存在する限り常に 200 を返し、完全一致で判定できる。
+          # 30 件を超えるので --paginate が要る（このリポジトリは既に 36 ブランチある）。
+          branches="$(gh api --paginate "repos/${REPO}/branches?per_page=100" --jq '.[].name')"
 
-          if [ "${matched}" -eq 0 ]; then
+          if ! printf '%s\n' "${branches}" | grep -qxF 'preview'; then
             echo "preview ブランチが存在しないため、main の内容で作成します。"
             gh api --method POST "repos/${REPO}/git/refs" \
               -f "ref=refs/heads/preview" -f "sha=${main_sha}"
