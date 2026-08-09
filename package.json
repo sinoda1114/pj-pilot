@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=20.12.0"
   },
   "scripts": {
     "dev": "next dev",
@@ -23,7 +23,7 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx scripts/seed.ts",
-    "db:backfill-summary-type": "tsx scripts/backfill-summary-type.ts"
+    "db:backfill-summary-type": "tsx --env-file-if-exists=.env scripts/backfill-summary-type.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "6.3.1",

@@ -7,6 +7,7 @@ import { createDb, type DbHandle } from "../lib/db/client";
 import { getTaskById } from "../lib/db/queries";
 import { projects, tasks } from "../lib/db/schema";
 import {
+  assertTargetIsIntentional,
   DETAIL_LIMIT,
   formatPlanReport,
   main,
@@ -125,7 +126,7 @@ describe("scripts/backfill-summary-type: formatPlanReport", () => {
 
 describe("scripts/backfill-summary-type: parseArgs", () => {
   it("既定は dry-run", () => {
-    expect(parseArgs([])).toEqual({ apply: false, help: false });
+    expect(parseArgs([])).toEqual({ apply: false, help: false, local: false });
   });
 
   it("--apply を明示したときだけ apply になる", () => {
@@ -135,6 +136,10 @@ describe("scripts/backfill-summary-type: parseArgs", () => {
   it("--help / -h を受け付ける", () => {
     expect(parseArgs(["--help"]).help).toBe(true);
     expect(parseArgs(["-h"]).help).toBe(true);
+  });
+
+  it("--local を受け付ける", () => {
+    expect(parseArgs(["--local"]).local).toBe(true);
   });
 
   it("知らない引数はエラーにする（打ち間違いを黙って dry-run にしない）", () => {
@@ -353,5 +358,41 @@ describe("scripts/backfill-summary-type: runBackfill", () => {
       await expect(main(["--aply"])).rejects.toThrow("不明な引数です: --aply");
       expect(await typeOf(parent.id)).toBe("task");
     });
+
+  });
+});
+
+/**
+ * `TURSO_DATABASE_URL` 未設定時のガード（DB には触らない）。
+ *
+ * 環境変数の読み込みに失敗すると既定の `file:local.db` へ黙って落ち、本番を直した
+ * つもりで手元の開発用 DB を書き換えて「更新完了」と表示してしまう。実際、デプロイ
+ * 手順書を書く際にこれを踏みかけた（`tsx` は `.env` を読まないが `drizzle-kit` は読む）。
+ */
+describe("scripts/backfill-summary-type: assertTargetIsIntentional", () => {
+  it("--apply かつ未設定なら止める", () => {
+    expect(() => assertTargetIsIntentional({ apply: true, local: false }, undefined)).toThrow(
+      "TURSO_DATABASE_URL が未設定",
+    );
+  });
+
+  it("止めるときは、次に何をすればよいかを示す", () => {
+    expect(() => assertTargetIsIntentional({ apply: true, local: false }, undefined)).toThrow(
+      "--local",
+    );
+  });
+
+  it("dry-run は止めない（DB を変更しないので無害）", () => {
+    expect(() => assertTargetIsIntentional({ apply: false, local: false }, undefined)).not.toThrow();
+  });
+
+  it("--local を明示すれば通す", () => {
+    expect(() => assertTargetIsIntentional({ apply: true, local: true }, undefined)).not.toThrow();
+  });
+
+  it("接続先が設定されていれば通す", () => {
+    expect(() =>
+      assertTargetIsIntentional({ apply: true, local: false }, "libsql://example.turso.io"),
+    ).not.toThrow();
   });
 });
