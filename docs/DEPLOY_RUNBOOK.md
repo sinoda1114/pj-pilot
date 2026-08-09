@@ -19,7 +19,7 @@
 
 | 値 | 例 | 用途 |
 |---|---|---|
-| 許可するメールドメイン | `example.co.jp` | これ以外のアカウントはログインできません（決定 D-07）。カンマ区切りで複数可 |
+| 許可するメールドメイン | `example.co.jp` | これ以外のアカウントはログインできません（決定 D-07）。カンマ区切りで複数可。`alice@gmail.com` のようにアドレス完全一致でも指定でき、両形式を混在できます。**`gmail.com` 等の共用ドメインをドメイン指定してはいけません**（全 Gmail ユーザーに開きます） |
 | Turso のリージョン | `nrt`（東京） | DB の物理配置。`turso db locations` で一覧が見られます |
 
 > **重要**: この手順で出てくるトークン類を、**チャットや Issue に貼らないでください。** Vercel と手元の `.env.local` にだけ入れます。リポジトリは Public です。
@@ -216,13 +216,15 @@ done
 | `BETTER_AUTH_URL` | `https://<本番ドメイン>` | `https://<Preview固定ドメイン>` |
 | `GOOGLE_CLIENT_ID` | Step 4 の値 | 同左 |
 | `GOOGLE_CLIENT_SECRET` | Step 4 の値 | 同左 |
-| `ALLOWED_EMAIL_DOMAINS` | 例 `example.co.jp` | 同左 |
+| `ALLOWED_EMAIL_DOMAINS` | 例 `example.co.jp` / `alice@gmail.com` | 同左 |
 | `CRON_SECRET` | 生成値③ | 不要 |
 | `NEXT_PUBLIC_SITE_URL` | `https://<本番ドメイン>` | `https://<Preview固定ドメイン>` |
 
 > ⚠️ **`CRON_SECRET` を忘れないこと。** `app/api/cron/purge-trash/route.ts` は未設定なら fail-closed で 500 を返します。安全側の挙動ですが、**気づかず放置すると論理削除したタスクが永久に物理削除されません**。
 >
 > ⚠️ **`ALLOWED_EMAIL_DOMAINS` を忘れないこと。** 未設定・空文字なら**全ドメイン拒否**です（安全側デフォルト）。「ログインできない」ときはまずここを疑ってください。
+>
+> ⚠️ **`gmail.com` のような共用ドメインをドメイン指定しないこと。** 全 Gmail ユーザーがログインでき、`lib/auth/authz.ts` のとおり閲覧は全ログインユーザーに開いているため、全プロジェクトが読まれます。個人アカウントで運用する場合は `alice@gmail.com` のように**メールアドレス完全一致**で指定してください（ドメイン指定と混在可）。
 
 **確認**:
 
