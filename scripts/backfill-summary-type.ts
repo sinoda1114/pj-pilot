@@ -246,6 +246,40 @@ export async function runBackfill(
 }
 
 /**
+ * 「本番を直すつもりで手元の DB を書き換える」事故を止める。
+ *
+ * 環境変数の読み込みに失敗すると `TURSO_DATABASE_URL` が未設定のまま既定値へ黙って落ち、
+ * 開発用の `file:local.db` を書き換えて「更新完了」と表示してしまう。
+ * 実際、デプロイ手順書を書く際にこれを踏みかけた。`tsx` は `.env` を読まないのに
+ * `drizzle-kit` は読むため、「`.env` を書いてから流す」という同じ手順のつもりで
+ * 挙動が違っていた（npm script に `--env-file-if-exists` を足して揃えたが、
+ * 読み込みは環境次第で失敗しうるので、書き込む側でも止める）。
+ *
+ * dry-run は DB を変更しないので止めない。止めるのは `--apply` のときだけ。
+ * 手元の DB を意図して直したい場合は `--local` を明示する。
+ *
+ * DB に触らず単体テストできるよう、`main` から切り出してある。
+ */
+export function assertTargetIsIntentional(
+  options: Pick<CliOptions, "apply" | "local">,
+  configuredUrl: string | undefined,
+): void {
+  if (!options.apply || options.local || configuredUrl !== undefined) {
+    return;
+  }
+
+  throw new Error(
+    [
+      `TURSO_DATABASE_URL が未設定のため ${LOCAL_FALLBACK_URL} が対象になります。`,
+      "本番 DB に流すつもりなら、環境変数の読み込みに失敗しています。",
+      "",
+      "  対象を指定して流す:  set -a; . ./.env; set +a; npm run db:backfill-summary-type -- --apply",
+      "  手元の DB でよい場合: npm run db:backfill-summary-type -- --apply --local",
+    ].join("\n"),
+  );
+}
+
+/**
  * CLI の入口。接続先の解決・出力・ハンドルの後始末だけを担う。
  *
  * `export` しているのはテストから呼ぶため。CLI 部分は「どの DB に、どのモードで
@@ -266,22 +300,7 @@ export async function main(argv: readonly string[] = process.argv.slice(2)) {
   const configuredUrl = process.env.TURSO_DATABASE_URL;
   const resolvedUrl = configuredUrl ?? LOCAL_FALLBACK_URL;
 
-  // **本命の事故はこちら。** 本番を直すつもりで環境変数の読み込みに失敗していると、
-  // 既定値へ黙って落ちて手元の開発用 DB を書き換えて「完了」と表示する。
-  // 実際、手順書を書く際に `tsx` が `.env` を読まないことに気付かず、この経路を踏みかけた
-  // （`drizzle-kit` は `.env` を読むので、同じ手順のつもりで挙動が違う）。
-  // dry-run は無害なので止めない。止めるのは書き込む `--apply` のときだけ。
-  if (options.apply && configuredUrl === undefined && !options.local) {
-    throw new Error(
-      [
-        `TURSO_DATABASE_URL が未設定のため ${LOCAL_FALLBACK_URL} が対象になります。`,
-        "本番 DB に流すつもりなら、環境変数の読み込みに失敗しています。",
-        "",
-        "  対象を指定して流す:  set -a; . ./.env; set +a; npm run db:backfill-summary-type -- --apply",
-        "  手元の DB でよい場合: npm run db:backfill-summary-type -- --apply --local",
-      ].join("\n"),
-    );
-  }
+  assertTargetIsIntentional(options, configuredUrl);
 
   console.log(`対象DB: ${resolvedUrl}`);
   console.log(

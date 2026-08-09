@@ -6,6 +6,9 @@
 
 ## 前提
 
+- **Node.js 20.12 以上**（`package.json` の `engines` と同じ。22 系を推奨）。
+  `npm run db:backfill-summary-type` は `.env` の読み込みに `--env-file-if-exists` を使うため、
+  20.9〜20.11 では起動時に落ちます
 - 所要は 30〜40 分程度（Google の同意画面設定を除く）
 - **ローカルの端末**、または**ローカルで動く Claude Code セッション**で実行してください
 - クラウドセッション（claude.ai/code）からは実行できません。理由は末尾の「なぜクラウドからできないか」

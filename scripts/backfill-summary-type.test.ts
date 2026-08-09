@@ -7,6 +7,7 @@ import { createDb, type DbHandle } from "../lib/db/client";
 import { getTaskById } from "../lib/db/queries";
 import { projects, tasks } from "../lib/db/schema";
 import {
+  assertTargetIsIntentional,
   DETAIL_LIMIT,
   formatPlanReport,
   main,
@@ -358,54 +359,40 @@ describe("scripts/backfill-summary-type: runBackfill", () => {
       expect(await typeOf(parent.id)).toBe("task");
     });
 
-    /**
-     * 本命の事故は「本番を直したつもりで手元の DB を書き換える」こと。
-     * 環境変数の読み込みに失敗すると既定値へ黙って落ちるため、書き込む `--apply` は止める。
-     *
-     * 実際にこれを踏みかけた: 手順書で `.env` を書いてから流す形にしたが、`tsx` は
-     * `.env` を読まないので `file:local.db` が対象になっていた（`drizzle-kit` は読むため、
-     * 同じ手順のつもりで挙動が違った）。
-     */
-    describe("TURSO_DATABASE_URL 未設定時のガード", () => {
-      beforeEach(() => {
-        vi.stubEnv("TURSO_DATABASE_URL", undefined as unknown as string);
-      });
+  });
+});
 
-      it("--apply は止める（既定の file:local.db へ黙って書かない）", async () => {
-        await expect(main(["--apply"])).rejects.toThrow("TURSO_DATABASE_URL が未設定");
-      });
+/**
+ * `TURSO_DATABASE_URL` 未設定時のガード（DB には触らない）。
+ *
+ * 環境変数の読み込みに失敗すると既定の `file:local.db` へ黙って落ち、本番を直した
+ * つもりで手元の開発用 DB を書き換えて「更新完了」と表示してしまう。実際、デプロイ
+ * 手順書を書く際にこれを踏みかけた（`tsx` は `.env` を読まないが `drizzle-kit` は読む）。
+ */
+describe("scripts/backfill-summary-type: assertTargetIsIntentional", () => {
+  it("--apply かつ未設定なら止める", () => {
+    expect(() => assertTargetIsIntentional({ apply: true, local: false }, undefined)).toThrow(
+      "TURSO_DATABASE_URL が未設定",
+    );
+  });
 
-      it("止めるときに、次に何をすればよいかを示す", async () => {
-        await expect(main(["--apply"])).rejects.toThrow("--local");
-      });
+  it("止めるときは、次に何をすればよいかを示す", () => {
+    expect(() => assertTargetIsIntentional({ apply: true, local: false }, undefined)).toThrow(
+      "--local",
+    );
+  });
 
-      it("dry-run は止めない（書き込まないので無害）", async () => {
-        await main([]);
-        expect(logs.join("\n")).toContain("対象DB: file:local.db");
-      });
+  it("dry-run は止めない（DB を変更しないので無害）", () => {
+    expect(() => assertTargetIsIntentional({ apply: false, local: false }, undefined)).not.toThrow();
+  });
 
-      it("--local を明示すれば --apply を通す", async () => {
-        // `file:local.db` は**カレントディレクトリ相対**なので、開発用の local.db を
-        // テストが書き換えないよう、一時ディレクトリに移ってから実行する。
-        const cwd = process.cwd();
-        const migrationsFolder = join(cwd, "drizzle");
-        const sandbox = mkdtempSync(join(tmpdir(), "pj-pilot-backfill-local-"));
-        try {
-          process.chdir(sandbox);
-          // 移動先の `local.db` にテーブルを用意する（`main` は cwd 相対で開く）。
-          const local = createDb("file:local.db");
-          await migrate(local.db, { migrationsFolder });
-          local.client.close();
+  it("--local を明示すれば通す", () => {
+    expect(() => assertTargetIsIntentional({ apply: true, local: true }, undefined)).not.toThrow();
+  });
 
-          await expect(main(["--apply", "--local"])).resolves.toBeUndefined();
-          expect(logs.join("\n")).toContain("対象DB: file:local.db");
-          // 一時ディレクトリ側に作られていること（＝リポジトリの local.db を触っていない）。
-          expect(existsSync(join(sandbox, "local.db"))).toBe(true);
-        } finally {
-          process.chdir(cwd);
-          rmSync(sandbox, { recursive: true, force: true });
-        }
-      });
-    });
+  it("接続先が設定されていれば通す", () => {
+    expect(() =>
+      assertTargetIsIntentional({ apply: true, local: false }, "libsql://example.turso.io"),
+    ).not.toThrow();
   });
 });
