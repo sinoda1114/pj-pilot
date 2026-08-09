@@ -47,6 +47,7 @@ for t in bug feature content i18n legal billing data mobile ops; do \
 
 ### 5. 取り込み
 差分は **`/ai-review` → commit → `/security-review` → PR → マージ** で入れる（＝テンプレ自身のルールで取り込む）。
+クラウドセッションでは `/ai-review`（Codex CLI 依存）が使えないため、ゲート1は `/code-review` で代替する。
 
 ## チェックリスト
 - [ ] lockfile が `.gitignore` に入っていないか（入っていたら外す）

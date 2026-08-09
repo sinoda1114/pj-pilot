@@ -33,6 +33,8 @@ git worktree remove ../pj-pilot-<topic>   # マージ後に撤去
 - 機能は feature ブランチ → **PR → マージ**。
 - マージ前に **2 段ゲート**（`/ai-review` → コミット → `/security-review`）を通す。
 - 2 段ゲートはスコープが違う: `/ai-review` = 未コミット差分、`/security-review` = ブランチ全体（`origin/HEAD` 差分）。
+- **クラウドセッションでは `/ai-review` が使えない**（Codex CLI 不在）。ゲート1は `/code-review`
+  で代替する。ゲート2（`/security-review`）はクラウドでも実行できるため省略しない。
   直列で回す。worktree 運用では skill を **worktree 側で実行**する（cwd の現在ブランチを見るため）。
 - コンフリクトは feature 側で `git merge origin/main`（or rebase）して解消してから PR を出す。
 
