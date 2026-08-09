@@ -143,10 +143,29 @@ vercel domains ls
 
 🔗 https://vercel.com/sinoda1114/pj-pilot/settings/domains
 
+割り当てるときは、ドメインを **`preview` ブランチに紐付けて**ください（Domains の Connect to an environment 側のブランチ選択で `All Branches` → `preview`）。紐付けを保存しても、そのブランチのデプロイが1件も無ければドメインは古い割り当てのままです。`vercel ls --meta githubCommitRef=preview` が `No deployments found` なら、`preview` に何か push してデプロイを作ってください。
+
 **この時点で控える値**:
 
 - 本番ドメイン（例 `pj-pilot.vercel.app`）
 - Preview 固定ドメイン（例 `pj-pilot-preview.vercel.app`）
+
+### `preview` ブランチの位置づけ
+
+Preview 固定ドメインは `preview` ブランチの最新デプロイを指します。したがって **`preview` の内容がそのまま Preview 環境の内容**です。
+
+このブランチには2つの使い方があり、`.github/workflows/sync-preview.yml` が両立させています。
+
+| 状態 | ワークフローの動作 |
+|---|---|
+| `preview` が `main` の祖先（独自コミット無し） | `main` へ早送りする |
+| `preview` が独自コミットを持つ | ref は変更せず、**ジョブを失敗させる** |
+
+つまり普段は放っておけば `main` に追随し、未マージの変更を Preview DB で試したいときは `preview` に push すればそのまま残ります。試し終わったら `git push origin origin/main:preview --force-with-lease` で戻します。
+
+独自コミットがあるときに失敗させるのは、そのままだと**気づけない**からです。検証用のコミットを載せたあと、その変更が squash マージされると `preview` と `main` は恒久的に食い違います。本人は「検証は終わった」と思っているので、緑の実行に付く警告は誰も見ません。結果として以後の同期がすべて黙って止まり、Issue #72 と同じ状態に戻ります。失敗にしておけば `main` への push のたびに赤くなり、`preview` を揃え直した時点で自動的に消えます。検証中は赤いままになりますが、それは「Preview 環境が本番相当ではない」という事実の可視化なので、そのままにしてあります。
+
+手動運用にしていないのは、実際に事故が起きたためです。`preview` が古いまま放置され、Preview 環境にだけ認証の修正が入っておらず誰もログインできない状態になっていました（Issue #72）。ビルドは通るので、認証を試すまで気づけません。
 
 ---
 
