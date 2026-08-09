@@ -125,7 +125,7 @@ describe("scripts/backfill-summary-type: formatPlanReport", () => {
 
 describe("scripts/backfill-summary-type: parseArgs", () => {
   it("既定は dry-run", () => {
-    expect(parseArgs([])).toEqual({ apply: false, help: false });
+    expect(parseArgs([])).toEqual({ apply: false, help: false, local: false });
   });
 
   it("--apply を明示したときだけ apply になる", () => {
@@ -135,6 +135,10 @@ describe("scripts/backfill-summary-type: parseArgs", () => {
   it("--help / -h を受け付ける", () => {
     expect(parseArgs(["--help"]).help).toBe(true);
     expect(parseArgs(["-h"]).help).toBe(true);
+  });
+
+  it("--local を受け付ける", () => {
+    expect(parseArgs(["--local"]).local).toBe(true);
   });
 
   it("知らない引数はエラーにする（打ち間違いを黙って dry-run にしない）", () => {
@@ -352,6 +356,56 @@ describe("scripts/backfill-summary-type: runBackfill", () => {
 
       await expect(main(["--aply"])).rejects.toThrow("不明な引数です: --aply");
       expect(await typeOf(parent.id)).toBe("task");
+    });
+
+    /**
+     * 本命の事故は「本番を直したつもりで手元の DB を書き換える」こと。
+     * 環境変数の読み込みに失敗すると既定値へ黙って落ちるため、書き込む `--apply` は止める。
+     *
+     * 実際にこれを踏みかけた: 手順書で `.env` を書いてから流す形にしたが、`tsx` は
+     * `.env` を読まないので `file:local.db` が対象になっていた（`drizzle-kit` は読むため、
+     * 同じ手順のつもりで挙動が違った）。
+     */
+    describe("TURSO_DATABASE_URL 未設定時のガード", () => {
+      beforeEach(() => {
+        vi.stubEnv("TURSO_DATABASE_URL", undefined as unknown as string);
+      });
+
+      it("--apply は止める（既定の file:local.db へ黙って書かない）", async () => {
+        await expect(main(["--apply"])).rejects.toThrow("TURSO_DATABASE_URL が未設定");
+      });
+
+      it("止めるときに、次に何をすればよいかを示す", async () => {
+        await expect(main(["--apply"])).rejects.toThrow("--local");
+      });
+
+      it("dry-run は止めない（書き込まないので無害）", async () => {
+        await main([]);
+        expect(logs.join("\n")).toContain("対象DB: file:local.db");
+      });
+
+      it("--local を明示すれば --apply を通す", async () => {
+        // `file:local.db` は**カレントディレクトリ相対**なので、開発用の local.db を
+        // テストが書き換えないよう、一時ディレクトリに移ってから実行する。
+        const cwd = process.cwd();
+        const migrationsFolder = join(cwd, "drizzle");
+        const sandbox = mkdtempSync(join(tmpdir(), "pj-pilot-backfill-local-"));
+        try {
+          process.chdir(sandbox);
+          // 移動先の `local.db` にテーブルを用意する（`main` は cwd 相対で開く）。
+          const local = createDb("file:local.db");
+          await migrate(local.db, { migrationsFolder });
+          local.client.close();
+
+          await expect(main(["--apply", "--local"])).resolves.toBeUndefined();
+          expect(logs.join("\n")).toContain("対象DB: file:local.db");
+          // 一時ディレクトリ側に作られていること（＝リポジトリの local.db を触っていない）。
+          expect(existsSync(join(sandbox, "local.db"))).toBe(true);
+        } finally {
+          process.chdir(cwd);
+          rmSync(sandbox, { recursive: true, force: true });
+        }
+      });
     });
   });
 });

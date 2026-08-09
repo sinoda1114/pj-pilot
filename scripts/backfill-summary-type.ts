@@ -64,19 +64,26 @@ export const DETAIL_LIMIT = 50;
 /** 1回の UPDATE に載せる id の数。SQLite のバインド変数の上限に触れないよう分割する。 */
 const CHUNK_SIZE = 200;
 
-const USAGE = `使い方: tsx scripts/backfill-summary-type.ts [--apply]
+/** `TURSO_DATABASE_URL` 未設定時の既定。開発用のローカル DB。 */
+const LOCAL_FALLBACK_URL = "file:local.db";
+
+const USAGE = `使い方: npm run db:backfill-summary-type [-- --apply]
 
   tasks.type を実際の親子関係（生存している子の有無）に合わせて整合させます。
 
   オプション:
     --apply     実際に UPDATE を流す。省略時は dry-run（DB を変更しない）。
+    --local     TURSO_DATABASE_URL 未設定のまま --apply することを明示的に許可する。
     -h, --help  この使い方を表示する。
 
-  対象DBは環境変数 TURSO_DATABASE_URL（未設定なら file:local.db）です。`;
+  対象DBは環境変数 TURSO_DATABASE_URL（未設定なら file:local.db）です。
+  npm script 経由なら、カレントディレクトリの .env があれば自動で読み込みます。`;
 
 export interface CliOptions {
   apply: boolean;
   help: boolean;
+  /** ローカルの既定 DB に対する `--apply` を明示的に許可する。 */
+  local: boolean;
 }
 
 /**
@@ -85,11 +92,13 @@ export interface CliOptions {
  * 利用者は `--apply` を付けたつもりで何も更新されないまま終わったことに気付けない。
  */
 export function parseArgs(argv: readonly string[]): CliOptions {
-  const options: CliOptions = { apply: false, help: false };
+  const options: CliOptions = { apply: false, help: false, local: false };
 
   for (const arg of argv) {
     if (arg === "--apply") {
       options.apply = true;
+    } else if (arg === "--local") {
+      options.local = true;
     } else if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else {
@@ -254,7 +263,25 @@ export async function main(argv: readonly string[] = process.argv.slice(2)) {
   // `scripts/seed.ts` と同じ読み方。ただし seed のような「リモート禁止」ガードは置かない。
   // このスクリプトは既存の本番データを直すためのものであり、リモートに流すことこそが
   // 本来の用途のため。代わりに接続先を必ず表示して、意図しない DB への実行に気付けるようにする。
-  const resolvedUrl = process.env.TURSO_DATABASE_URL ?? "file:local.db";
+  const configuredUrl = process.env.TURSO_DATABASE_URL;
+  const resolvedUrl = configuredUrl ?? LOCAL_FALLBACK_URL;
+
+  // **本命の事故はこちら。** 本番を直すつもりで環境変数の読み込みに失敗していると、
+  // 既定値へ黙って落ちて手元の開発用 DB を書き換えて「完了」と表示する。
+  // 実際、手順書を書く際に `tsx` が `.env` を読まないことに気付かず、この経路を踏みかけた
+  // （`drizzle-kit` は `.env` を読むので、同じ手順のつもりで挙動が違う）。
+  // dry-run は無害なので止めない。止めるのは書き込む `--apply` のときだけ。
+  if (options.apply && configuredUrl === undefined && !options.local) {
+    throw new Error(
+      [
+        `TURSO_DATABASE_URL が未設定のため ${LOCAL_FALLBACK_URL} が対象になります。`,
+        "本番 DB に流すつもりなら、環境変数の読み込みに失敗しています。",
+        "",
+        "  対象を指定して流す:  set -a; . ./.env; set +a; npm run db:backfill-summary-type -- --apply",
+        "  手元の DB でよい場合: npm run db:backfill-summary-type -- --apply --local",
+      ].join("\n"),
+    );
+  }
 
   console.log(`対象DB: ${resolvedUrl}`);
   console.log(
