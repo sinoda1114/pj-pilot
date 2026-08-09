@@ -29,14 +29,50 @@
 | テスト | ✅ ユニット 577 / E2E 34 |
 | `origin/HEAD` | ✅ 設定済み（`main`） |
 | 公開前セキュリティ監査（認証認可 / 入力検証 / 論理削除 / シークレット・依存・CI） | ✅ 実施済み（PR #62 / #63 で対応） |
-| GitHub の `type:*` ラベル | **なし**（§10.1。`type:feature` を照会して不在を確認） |
-| GitHub Project（板） | **未作成**（§10.2） |
-| Secret scanning / Push protection | **未有効**（§10.1。実クレデンシャル作成前に必須） |
+| PJ の復元（ゴミ箱から戻す） | ✅ 実装済み（Issue #65 / PR #67） |
+| GitHub の `type:*` ラベル | ✅ あり（`type:feat` / `type:fix` / … の7種。下記 1.1.1） |
+| Secret scanning / Push protection | 🤖 sweeper のポリシー対象（下記 1.1.1） |
+| Dependabot / ブランチ保護 / 標準CI の配置 | 🤖 sweeper のポリシー対象（下記 1.1.1） |
+| GitHub Project（板） | **未作成**（§10.2。標準から意図的に除外されている） |
 | Vercel 連携 | **未実施**（§10.3） |
 | Turso DB / Google OAuth クライアント | **未作成**（§10.4 / §10.5） |
 
 未実施の項目はいずれもクラウドセッションから実行できません（理由と手順は §10、実施手順の
 まとまった版は [`docs/LOCAL_SETUP.md`](LOCAL_SETUP.md)）。
+
+#### 1.1.1 リポジトリ運用設定は sweeper が自動で揃える
+
+2026-08-08 に [`sinoda1114/ci-standard`](https://github.com/sinoda1114/ci-standard) が
+**リポジトリ設定の収束エンジン**へ拡張されました。`repo-policy.yml` が「あるべき状態」を
+宣言し、`sweeper`（毎日 06:00 JST の GitHub Actions）が全リポジトリの現状と突き合わせて
+差分を冪等に是正します。
+
+sweeper が自動で揃えるもの:
+
+- **`type:*` ラベルの定義**（`type:feat` / `type:fix` / `type:refactor` / `type:perf` /
+  `type:test` / `type:docs` / `type:chore`。色・説明の差分も是正）
+- **Secret scanning / Push protection の有効化**
+- **`.github/dependabot.yml` の配布**（※既存ファイルがあれば触らない。本リポジトリの
+  Mantine / dnd-kit グルーピングはそのまま維持される）
+- **標準CI（`.github/workflows/ci.yml`）の配置**
+- **ブランチ保護**（`ci / build` 必須・会話解決必須・admin にも適用）
+
+そのため、**これらを個別に手で設定する必要はありません。**
+`gh label create` 等を各リポジトリで叩くと二重管理になるので行わないこと。標準そのものを
+変えたい場合は `ci-standard/repo-policy.yml` を直します（1箇所の変更が全リポジトリに反映）。
+
+意図的に自動化していないもの（`repo-policy.yml` の `excluded` に理由付きで記載）:
+
+- **GitHub Project 板の作成** — 板は作れても Status カラムの定義が Web UI 必須で
+  冪等化できず、毎日「差分あり」と言い続ける壊れた仕組みになるため
+- **既定ラベル（bug / enhancement 等）の削除** — 破壊的で復元コストがあるため
+- **Issue へのラベル貼り付け** — 内容判断が要るため
+
+> **記録（誤りの訂正）**: 2026-08-08 の時点で本節はいったん「`type:*` ラベルは未作成」と
+> 書いていました。これは誤りで、**旧計画（§1.2 / §10.1）にある `type:feature` という名前で
+> 照会していた**ためです。実際の名前は Conventional Commits に合わせた `type:feat` で、
+> 照会すると存在します。名前が変わっている可能性を疑わずに「実物で確認した」と書いた
+> のが原因なので、以後この種の確認は一覧を取ってから判断します。
 
 ### 1.2 計画作成時点（2026-08-06）の状態
 
@@ -570,18 +606,29 @@ CI（`.github/workflows/ci.yml`）で `npm ci` → typecheck → lint → test �
 以下はクラウドセッション（このサンドボックス）から実行できません。
 
 - `gh` CLI が未インストールで、GitHub MCP サーバーにも **Projects v2 を操作するツールがありません**
-  → GitHub Project の作成・ラベル作成・リポジトリ設定の変更は不可
+  → GitHub Project の作成・ラベル定義の新規作成・リポジトリ設定の変更は不可
+  （ただし Issue の作成・クローズ・既存ラベルの付与は MCP から可能です）
 - Vercel の CLI も認証情報もありません → Vercel 連携は不可
 
-そのため、手順を以下に示します。所要は全体で 20〜30 分程度です。
+**このうちラベル・Secret scanning・Dependabot・ブランチ保護は、2026-08-08 以降
+ci-standard の sweeper が自動で揃えるため手作業が不要になりました（§1.1.1）。**
+手順として残っているのは Vercel / Turso / Google OAuth と、Project 板の運用だけです。
 
 ### 10.1 GitHub リポジトリ設定
 
+> **更新: 2026-08-08 — 下記のラベル作成は実行しないでください。**
+> `sinoda1114/ci-standard` の sweeper が `type:*` ラベル・Secret scanning・Dependabot・
+> ブランチ保護を毎日自動で揃えます（§1.1.1）。個別に `gh label create` を叩くと
+> 二重管理になります。**実際のラベル名は `type:feat` 系**（Conventional Commits 準拠）で、
+> 下記の `type:feature` 系ではありません。
+>
+> `origin/HEAD` だけは手元のクローンごとの設定なので、引き続き必要です。
+
 ```bash
-# type:* ラベル（状態は Project のカラムで持つ。status:* ラベルは作らない）
-for t in bug feature content i18n legal billing data mobile ops; do
-  gh label create "type:$t" --color ededed --repo sinoda1114/pj-pilot 2>/dev/null || true
-done
+# 【実行しないこと】sweeper が管理します。旧計画の記録として残しています。
+# for t in bug feature content i18n legal billing data mobile ops; do
+#   gh label create "type:$t" --color ededed --repo sinoda1114/pj-pilot 2>/dev/null || true
+# done
 
 # origin/HEAD（/security-review が必要とします。ローカル作業ディレクトリで実行）
 git remote set-head origin -a
@@ -686,16 +733,18 @@ Better Auth のコールバックパスは Auth.js と同じ `/api/auth/callback
 
 コード側は Phase 1・Phase 2 とも完了しています。残りはすべて**ローカルからの外部サービス設定**です。
 
-1. **Secret scanning / Push protection を有効化する**（§10.1）。Public リポジトリで
-   これから実クレデンシャルを扱うため、**Turso / Google / Vercel の値を作る前**に実施してください。
-   現状は「うっかり `git add`」を止める仕組みがありません（リスク R-5）
-2. **Turso の DB を作る**（§10.4）。本番用と Preview 用を分ける（Q-3）
-3. **Google OAuth クライアントを作る**（§10.5）。Preview 用の固定ドメインも併せて登録（R-4）
-4. **Vercel 連携と環境変数の設定**（§10.3）。`.env.example` のキーがすべて必要です
-5. **既存データのバックフィルを流す**（Issue #60）。`npm run db:backfill-summary-type` で
-   dry-run を確認してから `-- --apply`。デプロイ前に必須です
-6. `type:*` ラベルと GitHub Project の作成（§10.1 / §10.2）。運用上あると便利ですが、
+1. **Turso の DB を作る**（§10.4）。本番用と Preview 用を分ける（Q-3）
+2. **Google OAuth クライアントを作る**（§10.5）。Preview 用の固定ドメインも併せて登録（R-4）
+3. **Vercel 連携と環境変数の設定**（§10.3）。`.env.example` のキーがすべて必要です
+4. **既存データのバックフィルを流す**（Issue #60）。`npm run db:backfill-summary-type` で
+   dry-run を確認してから `-- --apply`。**必ず 1〜3 のあと**に実施してください。
+   このスクリプトは `TURSO_DATABASE_URL` が指す DB を対象にするため、Turso が無い状態で
+   流しても手元の開発用 DB を直すだけになります
+5. GitHub Project 板への Issue 追加（§10.2）。標準から意図的に除外されているので手作業です。
    デプロイのブロッカーではありません
+
+**Secret scanning / Push protection・`type:*` ラベル・Dependabot・ブランチ保護は
+sweeper が自動で揃えるため、手動作業は不要です**（§1.1.1）。
 
 ### 作業の割り振りについて
 
