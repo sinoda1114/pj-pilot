@@ -30,31 +30,45 @@ Google Cloud Console への通信を遮断しているため（実測で確認�
 
 ---
 
-## 1. GitHub リポジトリ設定（§10.1、未実施）
+## 1. GitHub リポジトリ設定（**作業不要になりました**）
 
-`type:feature` ラベルの存在を GitHub API で確認したところ **存在しない**。§10.1 の手順は
-まだ未実施。
+> **更新: 2026-08-08。** この節に書いていた手動手順は、すべて
+> [`sinoda1114/ci-standard`](https://github.com/sinoda1114/ci-standard) の `sweeper`
+> （毎日 06:00 JST）が自動で揃えるようになりました。**手で実行しないでください。**
+> 個別に `gh label create` 等を叩くと sweeper と二重管理になります。
 
-```bash
-for t in bug feature content i18n legal billing data mobile ops; do
-  gh label create "type:$t" --color ededed --repo sinoda1114/pj-pilot 2>/dev/null || true
-done
-```
+sweeper が `repo-policy.yml` の宣言に従って収束させるもの:
 
-加えて、**このクローン限定の話として** `refs/remotes/origin/HEAD` がローカルに設定されて
-いないことも確認した（`/security-review` が `origin/HEAD` を必要とする）。クラウドセッションは
-毎回使い捨てのクローンなので、ローカルでも新しく clone した端末では同じ状態になる。
+- `type:*` ラベルの定義（`type:feat` / `type:fix` / `type:refactor` / `type:perf` /
+  `type:test` / `type:docs` / `type:chore`。色・説明の差分も是正）
+- Secret scanning / Push protection の有効化
+- `.github/dependabot.yml` の配布（既存ファイルがあれば触らない）
+- 標準CI（`.github/workflows/ci.yml`）の配置
+- ブランチ保護（`ci / build` 必須・会話解決必須・admin にも適用）
+
+反映を急ぐときは ci-standard の Actions → sweeper → Run workflow で即時実行できます。
+標準そのものを変えたいときは、各リポジトリではなく `ci-standard/repo-policy.yml` を直します。
+
+**旧記述の訂正**: 以前この節には「`type:feature` ラベルを GitHub API で確認したところ
+存在しない」と書いていましたが、これは誤りです。実際のラベル名は Conventional Commits に
+合わせた **`type:feat`** で、照会すると存在します（`type:chore` も確認済み）。
+旧計画の命名で照会したまま「存在しない」と判断していました。
+
+### 残る手作業: `origin/HEAD`（クローンごと）
+
+`refs/remotes/origin/HEAD` はリモート側ではなく**手元のクローンの設定**なので、
+新しく clone した端末では都度必要です（`/security-review` が要求します）。
 
 ```bash
 git remote set-head origin -a
 ```
 
-Web UI（Settings → Code security）で以下を有効化:
+## 2. GitHub Project（板）の作成（§10.2、手作業）
 
-- Secret scanning
-- Push protection
-
-## 2. GitHub Project（板）の作成（§10.2、未確認）
+**Project 板の作成は標準から意図的に除外されています。** 板は作れても Status カラムの
+定義が Web UI 必須で冪等化できず、毎日「差分あり」と言い続ける壊れた仕組みになるためです
+（`ci-standard/repo-policy.yml` の `excluded` に理由が記載されています）。
+既存の板への Issue 追加も手作業です。
 
 クラウドセッションの GitHub MCP サーバーには Projects v2 を操作するツールが無いため、
 存在するかどうかもここでは確認できていない。無ければ作成する。
