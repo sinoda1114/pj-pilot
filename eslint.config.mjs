@@ -11,6 +11,8 @@ const eslintConfig = [
       "coverage/**",
       "playwright-report/**",
       ".claude/worktrees/**",
+      // ベンダリングした外部スキル（claude-kit 経由）。本体のコードではないため対象外にする。
+      ".claude/skills/**",
     ],
   },
 ];
