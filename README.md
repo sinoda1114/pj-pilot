@@ -43,14 +43,21 @@ pj-pilot はそこを重視し、バーをドラッグしたときに何がど�
 
 選定の根拠と、検討して見送った選択肢は [REQUIREMENTS.md](REQUIREMENTS.md) に記載しています。
 
-## 開発
+## 開発環境の起動手順
 
-```bash
-npm ci
-cp .env.example .env.local   # 値を埋める（docs/LOCAL_SETUP.md 参照）
-npm run db:migrate
-npm run dev
-```
+前提として Node.js 20.12.0 以上が必要です。環境変数の値の埋め方や Google OAuth の設定は
+[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md) を参照してください。
+
+- `npm ci` — 依存関係をインストールする（lockfile 固定）
+- `cp .env.example .env.local` — 環境変数ファイルを作成し、値を埋める
+- `npm run db:migrate` — マイグレーションを適用する（`.env.local` が空ならローカルの `file:local.db` を使う）
+- `npm run db:seed` — （任意）開発用ダミーデータを投入する
+- `npm run dev` — 開発サーバーを起動する（既定は http://localhost:3000）
+
+起動後、`/sign-in` から「Googleでログイン」でサインインします。`GOOGLE_CLIENT_ID` /
+`GOOGLE_CLIENT_SECRET` が未設定だと、実際のログインは完了しません。
+
+## 開発
 
 | コマンド | 内容 |
 |---|---|
