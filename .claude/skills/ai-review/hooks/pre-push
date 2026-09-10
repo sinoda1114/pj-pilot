@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# /ai-review v2 pre-push ゲート（ブロック型）
+#
+# .review-reports/latest.json を検査し、以下なら push を拒否する:
+#   1. latest.json が無い、または head_sha が今の HEAD と一致しない（レビュー未実施／古い）
+#   2. verdict が block
+#   3. escalate=true かつ escalation_done=false かつ skipped_by_user=false（昇格未実施）
+#
+# 緊急回避: AI_REVIEW_BYPASS=1 git push  （理由をコミットログか PR に残すこと）
+# リポジトリ除外: git config ai-review.skip true（設定ミラー等、コードでないリポジトリ）
+# 導入: ~/.git-hooks/pre-push にコピー（core.hooksPath=~/.git-hooks 前提）。chmod +x を忘れない。
+set -uo pipefail
+
+[ "${AI_REVIEW_BYPASS:-0}" = "1" ] && { echo "[ai-review] BYPASS 指定。ゲート検査を飛ばします" >&2; exit 0; }
+
+# リポジトリ単位の除外（設定ミラー等、コードレビュー対象でないリポジトリ）: git config ai-review.skip true
+[ "$(git config --get ai-review.skip 2>/dev/null)" = "true" ] && { echo "[ai-review] ai-review.skip=true のためゲート検査を飛ばします" >&2; exit 0; }
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$repo_root" || exit 0
+
+# 削除 push（local_sha が全ゼロ）だけなら検査不要
+only_delete=1
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" != "0000000000000000000000000000000000000000" ] && only_delete=0
+done
+[ $only_delete -eq 1 ] && exit 0
+
+f=".review-reports/latest.json"
+if [ ! -f "$f" ]; then
+  echo "[ai-review] 拒否: $f がありません。push 前に /ai-review を実行してください" >&2
+  exit 1
+fi
+
+# jq 非依存の素朴な抽出
+get() { sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" "$f" | head -1; }
+head_sha="$(get head_sha)"; verdict="$(get verdict)"
+escalate="$(get escalate)"; done_flag="$(get escalation_done)"; skipped="$(get skipped_by_user)"
+cur="$(git rev-parse HEAD)"
+
+if [ "$head_sha" != "$cur" ]; then
+  echo "[ai-review] 拒否: レビュー済み SHA ($head_sha) と HEAD ($cur) が一致しません。/ai-review を再実行してください" >&2
+  exit 1
+fi
+if [ "$verdict" = "block" ]; then
+  echo "[ai-review] 拒否: 直近のレビュー結論が block です。修正して /ai-review を再実行してください" >&2
+  exit 1
+fi
+if [ "$escalate" = "true" ] && [ "$done_flag" != "true" ] && [ "$skipped" != "true" ]; then
+  echo "[ai-review] 拒否: 昇格条件に該当しましたが /security-review が未実施です。/ai-review を再実行するか、明示的に昇格スキップを指示してください" >&2
+  exit 1
+fi
+
+echo "[ai-review] ゲート通過 (verdict=$verdict escalate=$escalate done=$done_flag skipped=$skipped)" >&2
+exit 0
