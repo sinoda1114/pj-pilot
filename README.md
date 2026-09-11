@@ -43,14 +43,26 @@ pj-pilot はそこを重視し、バーをドラッグしたときに何がど�
 
 選定の根拠と、検討して見送った選択肢は [REQUIREMENTS.md](REQUIREMENTS.md) に記載しています。
 
-## 開発
+## 開発環境の起動手順
 
-```bash
-npm ci
-cp .env.example .env.local   # 値を埋める（docs/LOCAL_SETUP.md 参照）
-npm run db:migrate
-npm run dev
-```
+前提: Node.js 20.12.0 以上（`package.json` の `engines`）。
+
+- `npm ci` — 依存をインストールする（lockfile 固定。`npm install` は使わない）
+- `cp .env.example .env.local` — 環境変数を用意し、値を埋める（各キーの意味と取得元は
+  [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md)）
+- `npm run db:migrate` — マイグレーションを適用する（`TURSO_DATABASE_URL` が未設定なら
+  ローカルの `file:local.db` が対象になる）
+- `npm run db:seed` — 任意。開発用のダミーデータを投入する
+- `npm run dev` — 開発サーバーを起動する（http://localhost:3000）
+
+起動したら `/sign-in` から Google でログインします。`GOOGLE_CLIENT_ID` /
+`GOOGLE_CLIENT_SECRET` と `ALLOWED_EMAIL_DOMAINS` が実際の値でないとログインは完了しません
+（設定手順は [docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md)）。
+
+dev サーバーは同時に 1 つだけ動かします。起動したまま本番ビルド（`npm run build`）を
+実行するとビルド成果物が壊れるため、先に dev サーバーを停止してください。
+
+## 開発
 
 | コマンド | 内容 |
 |---|---|
