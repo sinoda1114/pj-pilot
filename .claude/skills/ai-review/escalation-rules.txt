@@ -1,0 +1,56 @@
+# /ai-review 昇格ルール（/security-review を自動起動する条件）
+#
+# 形式: 1 行 1 ルール。「<種別> <正規表現>」。空行と # 行は無視。
+#   path     変更ファイルのパス（git diff --name-only）に対する ERE。大文字小文字無視
+#   content  追加行（git diff の + 行、先頭 + を除いた本文）に対する ERE。大文字小文字無視
+#   secret   このパスが差分に含まれたら Codex（外部モデル）へ送らず警告する。大文字小文字無視
+#   max_files   変更ファイル数の上限（超えたら昇格）
+#   max_added   追加行数の上限（超えたら昇格）
+#
+# プロジェクト固有の追記は、対象リポジトリの .ai-review/escalation-rules.local.txt に同じ形式で書く。
+# ここは全プロジェクト共通の既定。モデルは一切関与しない（grep -iE のみ）。
+# 正規表現は POSIX ERE のみ使う（\b \s 等の GNU 拡張は BSD grep で一致しないため禁止）。
+# 語境界は (^|[^[:alnum:]_]) で書くが、これは 1 文字を消費する。パターン途中で使うと直前の
+# 区切り文字を二重に要求して不一致になるため、途中では ([^)]*[^[:alnum:]_])? のように
+# 「区切りを含む任意列の省略可能グループ」で書く。
+
+# ---- A. パス ----
+path  (^|/)(auth|authn|authz|login|logout|session|oauth|oidc|saml|sso|token|jwt|password|passwd|credential)s?(/|\.|-|_|$)
+path  (^|/)(payment|billing|checkout|stripe|invoice|subscription|wallet|refund)s?(/|\.|-|_|$)
+path  (^|/)(migration|migrate|schema|prisma|drizzle|sequelize|typeorm|alembic)s?(/|\.|-|_|$)
+path  \.sql$
+path  (^|/)(middleware|rbac|acl|permission|policy|guard|interceptor)s?(/|\.|-|_|$)
+path  ^\.github/workflows/
+path  (^|/)Dockerfile
+path  (^|/)docker-compose.*\.ya?ml$
+path  (^|/)\.env\.example$
+path  (^|/)(package|composer)\.json$
+path  (^|/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|poetry\.lock|go\.sum|Gemfile\.lock)$
+path  (^|/)(requirements[^/]*\.txt|pyproject\.toml|go\.mod|Cargo\.toml|Gemfile)$
+
+# ---- B. 追加行の内容 ----
+content  (^|[^[:alnum:]_])(exec|execSync|spawn|spawnSync|execFile|system|popen|subprocess\.(run|call|Popen)|Runtime\.getRuntime\(\)\.exec|ProcessBuilder)[[:space:]]*\(
+content  (^|[^[:alnum:]_])child_process([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])eval[[:space:]]*\(
+content  (^|[^[:alnum:]_])new[[:space:]]+Function[[:space:]]*\(
+content  (^|[^[:alnum:]_])(crypto|cipher|decipher|createHash|createHmac|jwt|jsonwebtoken|bcrypt|argon2|scrypt|pbkdf2|md5|sha1|MessageDigest|Cipher\.getInstance|SecureRandom|Math\.random)([^[:alnum:]_]|$)
+content  (SELECT|INSERT|UPDATE|DELETE|DROP|ALTER)([^[:alnum:]_]|$)[^;]*['"][[:space:]]*\+|['"][[:space:]]*\+[[:space:]]*([^;]*[^[:alnum:]_])?(WHERE|FROM|VALUES)([^[:alnum:]_]|$)
+content  \$\{[^}]*\}([^;]*[^[:alnum:]_])?(SELECT|INSERT|UPDATE|DELETE|WHERE)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(SELECT|INSERT|UPDATE|DELETE|WHERE)([^[:alnum:]_]|$)[^;]*\$\{
+content  (^|[^[:alnum:]_])(fetch|axios|got|request|http\.get|https\.get|urllib|requests\.(get|post))[[:space:]]*\([[:space:]]*([^'")]*[^[:alnum:]_])?(req|request|params|query|body|input|url|href)([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])fs\.(readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream|unlink|rm|readdir)[[:space:]]*\(([^)]*[^[:alnum:]_])?(req|request|params|query|body|input|name|path)([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])path\.(join|resolve)[[:space:]]*\(([^)]*[^[:alnum:]_])?(req|request|params|query|body|input)([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])Set-Cookie([^[:alnum:]_]|$)|(^|[^[:alnum:]_])res\.cookie[[:space:]]*\(|(^|[^[:alnum:]_])cookies?\.set[[:space:]]*\(
+content  Access-Control-Allow-Origin|(^|[^[:alnum:]_])cors[[:space:]]*\(
+content  (^|[^[:alnum:]_])dangerouslySetInnerHTML([^[:alnum:]_]|$)|(^|[^[:alnum:]_])innerHTML[[:space:]]*=|(^|[^[:alnum:]_])bypassSecurityTrust|(^|[^[:alnum:]_])v-html([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])(deserialize|unserialize|pickle\.loads?|yaml\.load|ObjectInputStream|readObject)[[:space:]]*\(
+content  (^|[^[:alnum:]_])(disableCsrf|csrf[[:space:]]*:[[:space:]]*false|verify[[:space:]]*:[[:space:]]*false|rejectUnauthorized[[:space:]]*:[[:space:]]*false|InsecureSkipVerify|CURLOPT_SSL_VERIFYPEER,[[:space:]]*false)([^[:alnum:]_]|$)
+
+# ---- 秘密情報（Codex へ送らない） ----
+secret  (^|/)\.env(\..*)?$
+secret  \.(pem|key|p12|pfx|crt|cer|cert|jks|keystore)$
+secret  (^|/)(id_rsa|id_ed25519|id_ecdsa)(\.pub)?$
+secret  (^|/)(secrets?|credentials?)\.(json|ya?ml|toml)$
+
+# ---- C. 規模 ----
+max_files  20
+max_added  1000

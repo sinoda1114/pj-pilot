@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# /ai-review v2 pre-push ゲート（ブロック型）
+#
+# .review-reports/latest.json を検査し、以下なら push を拒否する:
+#   1. latest.json が無い、または head_sha が今の HEAD と一致しない（レビュー未実施／古い）
+#   2. verdict が block
+#   3. escalate=true かつ escalation_done=false かつ skipped_by_user=false（昇格未実施）
+#   4. mode が branch でない（--local の記録は未コミット差分しか見ていないため push の根拠にしない）
+#
+# 緊急回避: AI_REVIEW_BYPASS=1 git push  （理由をコミットログか PR に残すこと）
+# リポジトリ除外: git config ai-review.skip true（設定ミラー等、コードでないリポジトリ）
+# 導入: ~/.git-hooks/pre-push にコピー（core.hooksPath=~/.git-hooks 前提）。chmod +x を忘れない。
+set -uo pipefail
+
+[ "${AI_REVIEW_BYPASS:-0}" = "1" ] && { echo "[ai-review] BYPASS 指定。ゲート検査を飛ばします" >&2; exit 0; }
+
+# リポジトリ単位の除外（設定ミラー等、コードレビュー対象でないリポジトリ）: git config ai-review.skip true
+[ "$(git config --get ai-review.skip 2>/dev/null)" = "true" ] && { echo "[ai-review] ai-review.skip=true のためゲート検査を飛ばします" >&2; exit 0; }
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$repo_root" || exit 0
+
+# push 対象の sha を全て集める。削除（全ゼロ）は対象外。
+# 現在の HEAD と比較するだけでは `git push origin other-branch` や
+# `git push origin @~2:main` がゲートを素通りする（worktree 運用で実際に起こる）。
+zero="0000000000000000000000000000000000000000"
+push_shas=""; push_refs=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "$local_sha" ] && continue
+  [ "$local_sha" = "$zero" ] && continue
+  push_shas="$push_shas $local_sha"
+  push_refs="$push_refs $local_ref"
+done
+[ -z "$(printf '%s' "$push_shas" | tr -d '[:space:]')" ] && exit 0
+
+f=".review-reports/latest.json"
+if [ ! -f "$f" ]; then
+  echo "[ai-review] 拒否: $f がありません。push 前に /ai-review を実行してください" >&2
+  exit 1
+fi
+
+# jq 非依存の素朴な抽出
+get() { sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" "$f" | head -1; }
+head_sha="$(get head_sha)"; verdict="$(get verdict)"; mode="$(get mode)"
+escalate="$(get escalate)"; done_flag="$(get escalation_done)"; skipped="$(get skipped_by_user)"
+# 記録の妥当性を先に検査する。record-gate.sh が書き込み途中で中断すると
+# verdict が空のまま残り得るが、「block でなければ通す」だと素通りする。
+case "$verdict" in
+  pass|fix) ;;
+  block)
+    echo "[ai-review] 拒否: 直近のレビュー結論が block です。修正して /ai-review を再実行してください" >&2
+    exit 1 ;;
+  *)
+    echo "[ai-review] 拒否: verdict が不正です（'$verdict'）。記録が壊れている可能性があります。/ai-review を再実行してください" >&2
+    exit 1 ;;
+esac
+
+# --local の記録は作業ツリー差分だけを見た結果で、HEAD のコミット済み差分をレビューしていない。
+# head_sha が一致しても push の根拠にはならないので、branch モードの記録だけを受け付ける。
+if [ "$mode" != "branch" ]; then
+  echo "[ai-review] 拒否: 記録が mode='$mode' です（--local の結果は push ゲートに使えません）。/ai-review（既定モード）を実行してください" >&2
+  exit 1
+fi
+
+# push する各 ref の sha を、レビュー済み SHA と突き合わせる
+for sha in $push_shas; do
+  if [ "$sha" != "$head_sha" ]; then
+    echo "[ai-review] 拒否: push 対象 ($sha) がレビュー済み SHA ($head_sha) と一致しません。" >&2
+    echo "[ai-review]       push 対象 ref:$push_refs" >&2
+    echo "[ai-review]       その ref をチェックアウトして /ai-review を実行してください" >&2
+    exit 1
+  fi
+done
+for b in "$escalate" "$done_flag" "$skipped"; do
+  case "$b" in
+    true|false) ;;
+    *)
+      echo "[ai-review] 拒否: 昇格フラグが不正です（escalate='$escalate' escalation_done='$done_flag' skipped_by_user='$skipped'）。" >&2
+      echo "[ai-review]       true/false 以外は昇格チェックを黙って飛ばすため受け付けません。/ai-review を再実行してください" >&2
+      exit 1 ;;
+  esac
+done
+
+if [ "$escalate" = "true" ] && [ "$done_flag" != "true" ] && [ "$skipped" != "true" ]; then
+  echo "[ai-review] 拒否: 昇格条件に該当しましたが /security-review が未実施です。/ai-review を再実行するか、明示的に昇格スキップを指示してください" >&2
+  exit 1
+fi
+
+echo "[ai-review] ゲート通過 (verdict=$verdict escalate=$escalate done=$done_flag skipped=$skipped)" >&2
+exit 0
