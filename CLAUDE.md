@@ -1,7 +1,7 @@
 # pj-pilot — Claude 用プロジェクト指示
 
 **運用ルール（HOW）の正本は [`AGENTS.md`](./AGENTS.md) と [`notes/`](./notes/)。**
-worktree フロー / 2段ゲート / TDD / E2E / タスク管理 / デプロイ規律はそちらに従うこと。
+worktree フロー / 1 段ゲート（/ai-review） / TDD / E2E / タスク管理 / デプロイ規律はそちらに従うこと。
 ここには、クラウドセッション（Claude Code on the web）で特に効かせたい項目を再掲する。
 
 > クラウドセッションではグローバル `~/.claude/CLAUDE.md` もプラグインもロードされない

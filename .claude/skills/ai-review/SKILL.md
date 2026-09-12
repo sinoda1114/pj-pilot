@@ -66,14 +66,18 @@ cat "$run/escalation.json"
 git rev-parse -q --verify MERGE_HEAD >/dev/null && echo "マージ進行中のため中断"
 ls "$(git rev-parse --git-dir)"/{rebase-merge,rebase-apply,CHERRY_PICK_HEAD,REVERT_HEAD} 2>/dev/null && echo "rebase/cherry-pick 進行中のため中断"
 
-# 2. 元の index を丸ごと退避（部分ステージもそのまま保存される）
-idx_backup="$(mktemp)"; cp "$(git rev-parse --git-dir)/index" "$idx_backup"
+# 2. 元の index を丸ごと退避（部分ステージもそのまま保存される）。
+#    初回コミット前などで index が無い場合は「無かった」ことを記録し、復元時に削除する
+#    （空の mktemp ファイルで index を上書きしてはいけない）
+idx="$(git rev-parse --git-path index)"; idx_backup=""
+if [ -f "$idx" ]; then idx_backup="$(mktemp)"; cp "$idx" "$idx_backup" || { echo "index 退避失敗のため中断"; exit 1; }; fi
+restore_index() { if [ -n "$idx_backup" ]; then cp "$idx_backup" "$idx"; rm -f "$idx_backup"; else rm -f "$idx"; fi; }
+trap restore_index EXIT
 
-# 3. レビュー用に全て stage
+# 3. レビュー用に全て stage（.review-reports/ は escalation-check.sh が exclude 済みなので混ざらない）
 git add -A
 
-# 4. 終了後、退避した index を書き戻す（reset は使わない）
-cp "$idx_backup" "$(git rev-parse --git-dir)/index"; rm -f "$idx_backup"
+# 4. 終了後、退避した index を書き戻す（reset は使わない）。trap で失敗時も必ず実行される
 ```
 
 この退避と復元は必ず対で行う。途中で失敗しても復元だけは実行する（`trap` 等）。
@@ -124,7 +128,7 @@ $SKILL/scripts/record-gate.sh --verdict <pass|fix|block> \
   [--skipped-by-user true --reason "<ユーザーの理由>"] \
   --report "$run/report.md" --mode <branch|local>
 ```
-`--local` のときは `--mode local` を付ける（フックは `branch` の記録しか有効とみなさない設計にはしていないが、監査用に区別する）。
+`--local` のときは必ず `--mode local` を付ける。pre-push フックは `mode=branch` の記録しか受け付けないので、`--local` の結果で push が通ることはない。
 
 ### 3.8 終了時の案内
 - `.gitignore` に `.review-reports/` が無ければ追記を**提案**する（自分では書き換えない）。
@@ -204,7 +208,7 @@ pre{background:var(--code-bg);color:var(--code-fg);padding:14px 16px;border-radi
   "reason": "", "report": ".review-reports/run-…/report.md", "recorded_at": "…"
 }
 ```
-フックの拒否条件: `head_sha ≠ HEAD` / `verdict = block` / `escalate かつ 未実施かつ 未スキップ`。緊急回避は `AI_REVIEW_BYPASS=1 git push`。
+フックの拒否条件: `head_sha ≠ push 対象 SHA` / `verdict = block` / `mode ≠ branch`（`--local` の記録は push の根拠にならない） / `escalate かつ 未実施かつ 未スキップ`。緊急回避は `AI_REVIEW_BYPASS=1 git push`、コードでないリポジトリは `git config ai-review.skip true`。
 
 ## 6. pre-push フック導入（初回のみ案内）
 ```bash
@@ -219,7 +223,7 @@ git config --global core.hooksPath ~/.git-hooks
 |---|---|
 | Git リポジトリでない | 中断 |
 | `origin/HEAD` 未設定 | `git remote set-head origin -a` を案内して中断（`--local` は続行可） |
-| 差分なし | 「対象なし」で終了。レポート・`latest.json` は書かない |
+| 差分なし（既定モード） | レビューは走らせず、`record-gate.sh --verdict pass --escalate false --escalation-done false --reason "no diff vs <base>"` だけ記録して終了（既に公開済みのコミットを指す新ブランチを push できるようにする）。`--local` で差分なしなら「対象なし」で終了し何も書かない |
 | 未コミット変更が残っている（既定モード） | 「先に commit」を案内して中断 |
 | `codex` 未導入・失敗・タイムアウト | その旨を明記し `/code-review` 単独で続行。二重化できていないことを結論に書く |
 | `claude` 側が失敗・タイムアウト | 同様に Codex 単独で続行 |

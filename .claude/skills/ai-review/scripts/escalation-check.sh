@@ -33,6 +33,14 @@ done
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo '{"error":"not a git repository"}'; exit 2; }
 
+# .review-reports/ をここで先に除外する。--local の初回実行では run ディレクトリが既に作られており、
+# 除外前に untracked として拾うと自分の生成物が対象に混ざる（git add -A で stage もされる）。
+# --git-path で解決すると linked worktree でも共通 .git/info/exclude に書ける。
+exclude_file="$(git rev-parse --git-path info/exclude 2>/dev/null)"
+if [ -n "$exclude_file" ] && ! grep -qs '^\.review-reports/\?$' "$exclude_file" 2>/dev/null; then
+  mkdir -p "$(dirname "$exclude_file")"; echo '.review-reports/' >> "$exclude_file"
+fi
+
 resolve_base() {
   local b
   b="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
@@ -52,6 +60,8 @@ if [ "$mode" = "branch" ]; then
   [ -n "$merge_base" ] || { echo "{\"error\":\"no merge-base with $base\"}"; exit 2; }
   files="$(git diff --name-only "$merge_base" HEAD 2>/dev/null)"
   added_lines="$(git diff "$merge_base" HEAD 2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+' | sed 's/^+//')"
+  # 規模判定は Git の追加行数（空行を含む）。本文行を数えると空行の大量追加が漏れる
+  added_count="$(git diff --numstat "$merge_base" HEAD 2>/dev/null | awk '$1 ~ /^[0-9]+$/ {s+=$1} END {print s+0}')"
 else
   base="(uncommitted)"
   tracked="$(git diff --name-only HEAD 2>/dev/null)"
@@ -59,20 +69,24 @@ else
   files="$(printf '%s\n%s\n' "$tracked" "$untracked" | sed '/^$/d')"
   added_tracked="$(git diff HEAD 2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+' | sed 's/^+//')"
   added_untracked=""
+  untracked_count=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
+    # untracked のシンボリックリンクは辿らない（リポジトリ外のファイル本文を読んで理由に載せない）
+    [ -L "$f" ] && continue
     if LC_ALL=C grep -qI . "$f" 2>/dev/null; then
       added_untracked="$added_untracked
 $(cat "$f")"
+      untracked_count=$((untracked_count + $(wc -l < "$f" | tr -d ' ')))
     fi
   done <<EOF
 $untracked
 EOF
   added_lines="$(printf '%s\n%s\n' "$added_tracked" "$added_untracked")"
+  added_count="$(( $(git diff --numstat HEAD 2>/dev/null | awk '$1 ~ /^[0-9]+$/ {s+=$1} END {print s+0}') + untracked_count ))"
 fi
 
 file_count="$(printf '%s\n' "$files" | sed '/^$/d' | wc -l | tr -d ' ')"
-added_count="$(printf '%s\n' "$added_lines" | sed '/^$/d' | wc -l | tr -d ' ')"
 
 reasons=""
 secret_paths=""
@@ -155,6 +169,8 @@ SECEOF
       chunk="$(git diff "$merge_base" HEAD -- "$sf" 2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+' | sed 's/^+//')"
     elif git ls-files --error-unmatch -- "$sf" >/dev/null 2>&1; then
       chunk="$(git diff HEAD -- "$sf" 2>/dev/null | grep -E '^\+' | grep -vE '^\+\+\+' | sed 's/^+//')"
+    elif [ -L "$sf" ]; then
+      chunk=""
     elif LC_ALL=C grep -qI . "$sf" 2>/dev/null; then
       chunk="$(cat "$sf" 2>/dev/null)"
     else

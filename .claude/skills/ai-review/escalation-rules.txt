@@ -8,7 +8,8 @@
 #   max_added   追加行数の上限（超えたら昇格）
 #
 # プロジェクト固有の追記は、対象リポジトリの .ai-review/escalation-rules.local.txt に同じ形式で書く。
-# ここは全プロジェクト共通の既定。モデルは一切関与しない（grep のみ）。
+# ここは全プロジェクト共通の既定。モデルは一切関与しない（grep -iE のみ）。
+# 正規表現は POSIX ERE のみ使う（\b \s 等の GNU 拡張は BSD grep で一致しないため禁止）。
 
 # ---- A. パス ----
 path  (^|/)(auth|authn|authz|login|logout|session|oauth|oidc|saml|sso|token|jwt|password|passwd|credential)s?(/|\.|-|_|$)
@@ -25,21 +26,21 @@ path  (^|/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|poetry\.lo
 path  (^|/)(requirements[^/]*\.txt|pyproject\.toml|go\.mod|Cargo\.toml|Gemfile)$
 
 # ---- B. 追加行の内容 ----
-content  \b(exec|execSync|spawn|spawnSync|execFile|system|popen|subprocess\.(run|call|Popen)|Runtime\.getRuntime\(\)\.exec|ProcessBuilder)\s*\(
-content  \bchild_process\b
-content  \beval\s*\(
-content  \bnew\s+Function\s*\(
-content  \b(crypto|cipher|decipher|createHash|createHmac|jwt|jsonwebtoken|bcrypt|argon2|scrypt|pbkdf2|md5|sha1|MessageDigest|Cipher\.getInstance|SecureRandom|Math\.random)\b
-content  (SELECT|INSERT|UPDATE|DELETE|DROP|ALTER)\b[^;]*['"]\s*\+|['"]\s*\+\s*[^;]*\b(WHERE|FROM|VALUES)\b
-content  \$\{[^}]*\}[^;]*\b(SELECT|INSERT|UPDATE|DELETE|WHERE)\b|\b(SELECT|INSERT|UPDATE|DELETE|WHERE)\b[^;]*\$\{
-content  \b(fetch|axios|got|request|http\.get|https\.get|urllib|requests\.(get|post))\s*\(\s*[^'")]*\b(req|request|params|query|body|input|url|href)\b
-content  \bfs\.(readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream|unlink|rm|readdir)\s*\([^)]*\b(req|request|params|query|body|input|name|path)\b
-content  \bpath\.(join|resolve)\s*\([^)]*\b(req|request|params|query|body|input)\b
-content  \bSet-Cookie\b|\bres\.cookie\s*\(|\bcookies?\.set\s*\(
-content  Access-Control-Allow-Origin|\bcors\s*\(
-content  \bdangerouslySetInnerHTML\b|\binnerHTML\s*=|\bbypassSecurityTrust|\bv-html\b
-content  \b(deserialize|unserialize|pickle\.loads?|yaml\.load|ObjectInputStream|readObject)\s*\(
-content  \b(disableCsrf|csrf\s*:\s*false|verify\s*:\s*false|rejectUnauthorized\s*:\s*false|InsecureSkipVerify|CURLOPT_SSL_VERIFYPEER,\s*false)\b
+content  (^|[^[:alnum:]_])(exec|execSync|spawn|spawnSync|execFile|system|popen|subprocess\.(run|call|Popen)|Runtime\.getRuntime\(\)\.exec|ProcessBuilder)[[:space:]]*\(
+content  (^|[^[:alnum:]_])child_process([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])eval[[:space:]]*\(
+content  (^|[^[:alnum:]_])new[[:space:]]+Function[[:space:]]*\(
+content  (^|[^[:alnum:]_])(crypto|cipher|decipher|createHash|createHmac|jwt|jsonwebtoken|bcrypt|argon2|scrypt|pbkdf2|md5|sha1|MessageDigest|Cipher\.getInstance|SecureRandom|Math\.random)([^[:alnum:]_]|$)
+content  (SELECT|INSERT|UPDATE|DELETE|DROP|ALTER)([^[:alnum:]_]|$)[^;]*['"][[:space:]]*\+|['"][[:space:]]*\+[[:space:]]*[^;]*(^|[^[:alnum:]_])(WHERE|FROM|VALUES)([^[:alnum:]_]|$)
+content  \$\{[^}]*\}[^;]*(^|[^[:alnum:]_])(SELECT|INSERT|UPDATE|DELETE|WHERE)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(SELECT|INSERT|UPDATE|DELETE|WHERE)([^[:alnum:]_]|$)[^;]*\$\{
+content  (^|[^[:alnum:]_])(fetch|axios|got|request|http\.get|https\.get|urllib|requests\.(get|post))[[:space:]]*\([[:space:]]*[^'")]*(^|[^[:alnum:]_])(req|request|params|query|body|input|url|href)([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])fs\.(readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream|unlink|rm|readdir)[[:space:]]*\([^)]*(^|[^[:alnum:]_])(req|request|params|query|body|input|name|path)([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])path\.(join|resolve)[[:space:]]*\([^)]*(^|[^[:alnum:]_])(req|request|params|query|body|input)([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])Set-Cookie([^[:alnum:]_]|$)|(^|[^[:alnum:]_])res\.cookie[[:space:]]*\(|(^|[^[:alnum:]_])cookies?\.set[[:space:]]*\(
+content  Access-Control-Allow-Origin|(^|[^[:alnum:]_])cors[[:space:]]*\(
+content  (^|[^[:alnum:]_])dangerouslySetInnerHTML([^[:alnum:]_]|$)|(^|[^[:alnum:]_])innerHTML[[:space:]]*=|(^|[^[:alnum:]_])bypassSecurityTrust|(^|[^[:alnum:]_])v-html([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])(deserialize|unserialize|pickle\.loads?|yaml\.load|ObjectInputStream|readObject)[[:space:]]*\(
+content  (^|[^[:alnum:]_])(disableCsrf|csrf[[:space:]]*:[[:space:]]*false|verify[[:space:]]*:[[:space:]]*false|rejectUnauthorized[[:space:]]*:[[:space:]]*false|InsecureSkipVerify|CURLOPT_SSL_VERIFYPEER,[[:space:]]*false)([^[:alnum:]_]|$)
 
 # ---- 秘密情報（Codex へ送らない） ----
 secret  (^|/)\.env(\..*)?$

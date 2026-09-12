@@ -31,11 +31,15 @@ git worktree remove ../pj-pilot-<topic>   # マージ後に撤去
 
 - **誰も main に直接 commit / push しない**。例外なし。
 - 機能は feature ブランチ → **PR → マージ**。
-- マージ前に **2 段ゲート**（`/ai-review` → コミット → `/security-review`）を通す。
-- 2 段ゲートはスコープが違う: `/ai-review` = 未コミット差分、`/security-review` = ブランチ全体（`origin/HEAD` 差分）。
-- **クラウドセッションでは `/ai-review` が使えない**（Codex CLI 不在）。ゲート1は `/code-review`
-  で代替する。ゲート2（`/security-review`）はクラウドでも実行できるため省略しない。
-  直列で回す。worktree 運用では skill を **worktree 側で実行**する（cwd の現在ブランチを見るため）。
+- push 前に **`/ai-review`（1 段ゲート・v2）** を通す。対象は `origin/HEAD` からのコミット済み差分全体。
+  内部で組み込み `/code-review` と Codex 純正 `codex exec review` を並列・独立に実行して突合し、
+  高リスク差分（auth / payment / schema 等のパス、危険 API の追加行、規模、セキュリティ指摘あり・不一致）は
+  `/security-review` を**機械判定で自動起動**する。人が `/security-review` を別途叩く運用は廃止（2026-09-12）。
+  結果は `.review-reports/latest.json` に記録され、pre-push フックが検査する（未レビュー・block・昇格未実施は push 拒否）。
+- **クラウドセッションでは `/ai-review` が使えない**（Codex CLI 不在）。クラウドは `/code-review` 単独で確認し、
+  正式なゲートはローカルで `/ai-review` を通してから push する。
+  worktree 運用では skill を **worktree 側で実行**する（cwd の現在ブランチを見るため）。
+- 設計根拠: `.claude/skills/ai-review/DESIGN-v2.md`。
 - コンフリクトは feature 側で `git merge origin/main`（or rebase）して解消してから PR を出す。
 
 ## 3. デプロイは「git 駆動・単一オーナー」（手動 CLI 禁止）

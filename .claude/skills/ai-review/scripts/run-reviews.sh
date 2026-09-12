@@ -14,14 +14,15 @@
 #   Claude : claude-opus-5 / high
 #   Codex  : gpt-5.6-sol   / high
 #
-# 終了コード: 0 = 全て正常終了、1 = いずれかが失敗またはタイムアウト（status.txt に詳細）
+# 終了コード: 0 = 全て正常終了、1 = いずれかが失敗・タイムアウト・レビュアー 0 起動（status.txt に詳細）
 # 環境変数 AI_REVIEW_DRY_RUN=1 で実コマンドを起動せずダミー出力を書く（テスト用）。
+# モデル・effort は環境変数で上書きできない（固定が契約。変えるならこのファイルを直す）。
 set -uo pipefail
 
-CLAUDE_MODEL="${AI_REVIEW_CLAUDE_MODEL:-claude-opus-5}"
-CLAUDE_EFFORT="${AI_REVIEW_CLAUDE_EFFORT:-high}"
-CODEX_MODEL="${AI_REVIEW_CODEX_MODEL:-gpt-5.6-sol}"
-CODEX_EFFORT="${AI_REVIEW_CODEX_EFFORT:-high}"
+CLAUDE_MODEL="claude-opus-5"
+CLAUDE_EFFORT="high"
+CODEX_MODEL="gpt-5.6-sol"
+CODEX_EFFORT="high"
 
 out=""; base=""; mode="branch"; use_codex=1; security=0; timeout_sec=900
 while [ $# -gt 0 ]; do
@@ -42,10 +43,12 @@ status="$out/status.txt"; : > "$status"
 
 # .review-reports/ をレビュー対象から外す（.git/info/exclude はコミットされないローカル設定。
 # 未登録だと /code-review と Codex が自分の生成物を untracked として拾いノイズになる）
-git_dir="$(git rev-parse --git-dir 2>/dev/null)"
-if [ -n "$git_dir" ] && ! grep -qs '^\.review-reports/\?$' "$git_dir/info/exclude" 2>/dev/null; then
-  mkdir -p "$git_dir/info"; echo '.review-reports/' >> "$git_dir/info/exclude"
-  echo "added .review-reports/ to $git_dir/info/exclude" >> "$status"
+# linked worktree では --git-dir が .git/worktrees/<name> を返し、そこに書いても Git は読まない。
+# --git-path info/exclude なら共通 .git/info/exclude に解決される。
+exclude_file="$(git rev-parse --git-path info/exclude 2>/dev/null)"
+if [ -n "$exclude_file" ] && ! grep -qs '^\.review-reports/\?$' "$exclude_file" 2>/dev/null; then
+  mkdir -p "$(dirname "$exclude_file")"; echo '.review-reports/' >> "$exclude_file"
+  echo "added .review-reports/ to $exclude_file" >> "$status"
 fi
 
 resolve_base() {
@@ -67,6 +70,8 @@ run_bg() {
   if [ "${AI_REVIEW_DRY_RUN:-0}" = "1" ]; then
     { echo "# DRY RUN: $name"; echo "cmd: $*"; } > "$out/$name.md"
     : > "$out/$name.err"
+    # 実行時と同じ後処理を通すため、Codex は -o 相当の最終回答ファイルも作る
+    [ "$name" = "codex-review" ] && cp "$out/$name.md" "$out/codex-review.last"
     ( sleep 1 ) &
   else
     # stdin は必ず /dev/null に落とす。claude -p も codex exec も stdin を待つため、
@@ -129,6 +134,12 @@ else
   else
     echo "codex disabled (--no-codex)" >> "$status"
   fi
+fi
+
+# レビュアーが 1 つも起動できなければ失敗。ここで 0 を返すと「レビュー済み」として突合へ進んでしまう。
+if [ -z "$(printf '%s' "$names" | tr -d '[:space:]')" ]; then
+  echo "NO REVIEWER STARTED（claude/codex が見つからないか無効化されている）" >> "$status"
+  cat "$status"; exit 1
 fi
 
 # ---- 自前タイムアウト（timeout コマンド非依存）----
@@ -196,7 +207,19 @@ for n in $names; do
     retry_cmd=()
     while IFS= read -r -d '' arg; do retry_cmd+=("$arg"); done < "$out/$n.cmd"
     if [ ${#retry_cmd[@]} -gt 0 ]; then
-      "${retry_cmd[@]}" < /dev/null > "$out/$n.md" 2>> "$out/$n.err" || true
+      # 再試行にも初回と同じタイムアウトと終了コード記録を適用する。
+      # 同期実行 + `|| true` だと、途中まで出力して落ちた再試行が ok 扱いになり、
+      # 応答待ちで止まるとゲート全体が戻らない。
+      ( exec "${retry_cmd[@]}" < /dev/null > "$out/$n.md" 2>> "$out/$n.err" ) &
+      rp=$!; re=0
+      while kill -0 "$rp" 2>/dev/null; do
+        if [ "$re" -ge "$timeout_sec" ]; then
+          kill "$rp" 2>/dev/null; sleep 2; kill -9 "$rp" 2>/dev/null
+          timed_out="$timed_out $n"; echo "TIMEOUT retry $n after ${timeout_sec}s" >> "$status"; break
+        fi
+        sleep 3; re=$((re + 3))
+      done
+      if wait "$rp" 2>/dev/null; then :; else is_timed_out "$n" || failed="$failed $n"; fi
       # Codex は -o の最終回答を正とするため、退避を再適用する
       if [ "$n" = "codex-review" ] && [ -f "$out/codex-review.last" ]; then
         mv "$out/codex-review.md" "$out/codex-review.log" 2>/dev/null || true

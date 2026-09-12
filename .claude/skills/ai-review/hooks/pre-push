@@ -5,6 +5,7 @@
 #   1. latest.json が無い、または head_sha が今の HEAD と一致しない（レビュー未実施／古い）
 #   2. verdict が block
 #   3. escalate=true かつ escalation_done=false かつ skipped_by_user=false（昇格未実施）
+#   4. mode が branch でない（--local の記録は未コミット差分しか見ていないため push の根拠にしない）
 #
 # 緊急回避: AI_REVIEW_BYPASS=1 git push  （理由をコミットログか PR に残すこと）
 # リポジトリ除外: git config ai-review.skip true（設定ミラー等、コードでないリポジトリ）
@@ -40,7 +41,7 @@ fi
 
 # jq 非依存の素朴な抽出
 get() { sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" "$f" | head -1; }
-head_sha="$(get head_sha)"; verdict="$(get verdict)"
+head_sha="$(get head_sha)"; verdict="$(get verdict)"; mode="$(get mode)"
 escalate="$(get escalate)"; done_flag="$(get escalation_done)"; skipped="$(get skipped_by_user)"
 # 記録の妥当性を先に検査する。record-gate.sh が書き込み途中で中断すると
 # verdict が空のまま残り得るが、「block でなければ通す」だと素通りする。
@@ -53,6 +54,13 @@ case "$verdict" in
     echo "[ai-review] 拒否: verdict が不正です（'$verdict'）。記録が壊れている可能性があります。/ai-review を再実行してください" >&2
     exit 1 ;;
 esac
+
+# --local の記録は作業ツリー差分だけを見た結果で、HEAD のコミット済み差分をレビューしていない。
+# head_sha が一致しても push の根拠にはならないので、branch モードの記録だけを受け付ける。
+if [ "$mode" != "branch" ]; then
+  echo "[ai-review] 拒否: 記録が mode='$mode' です（--local の結果は push ゲートに使えません）。/ai-review（既定モード）を実行してください" >&2
+  exit 1
+fi
 
 # push する各 ref の sha を、レビュー済み SHA と突き合わせる
 for sha in $push_shas; do
