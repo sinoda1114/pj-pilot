@@ -10,6 +10,9 @@
 # プロジェクト固有の追記は、対象リポジトリの .ai-review/escalation-rules.local.txt に同じ形式で書く。
 # ここは全プロジェクト共通の既定。モデルは一切関与しない（grep -iE のみ）。
 # 正規表現は POSIX ERE のみ使う（\b \s 等の GNU 拡張は BSD grep で一致しないため禁止）。
+# 語境界は (^|[^[:alnum:]_]) で書くが、これは 1 文字を消費する。パターン途中で使うと直前の
+# 区切り文字を二重に要求して不一致になるため、途中では ([^)]*[^[:alnum:]_])? のように
+# 「区切りを含む任意列の省略可能グループ」で書く。
 
 # ---- A. パス ----
 path  (^|/)(auth|authn|authz|login|logout|session|oauth|oidc|saml|sso|token|jwt|password|passwd|credential)s?(/|\.|-|_|$)
@@ -31,11 +34,11 @@ content  (^|[^[:alnum:]_])child_process([^[:alnum:]_]|$)
 content  (^|[^[:alnum:]_])eval[[:space:]]*\(
 content  (^|[^[:alnum:]_])new[[:space:]]+Function[[:space:]]*\(
 content  (^|[^[:alnum:]_])(crypto|cipher|decipher|createHash|createHmac|jwt|jsonwebtoken|bcrypt|argon2|scrypt|pbkdf2|md5|sha1|MessageDigest|Cipher\.getInstance|SecureRandom|Math\.random)([^[:alnum:]_]|$)
-content  (SELECT|INSERT|UPDATE|DELETE|DROP|ALTER)([^[:alnum:]_]|$)[^;]*['"][[:space:]]*\+|['"][[:space:]]*\+[[:space:]]*[^;]*(^|[^[:alnum:]_])(WHERE|FROM|VALUES)([^[:alnum:]_]|$)
-content  \$\{[^}]*\}[^;]*(^|[^[:alnum:]_])(SELECT|INSERT|UPDATE|DELETE|WHERE)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(SELECT|INSERT|UPDATE|DELETE|WHERE)([^[:alnum:]_]|$)[^;]*\$\{
-content  (^|[^[:alnum:]_])(fetch|axios|got|request|http\.get|https\.get|urllib|requests\.(get|post))[[:space:]]*\([[:space:]]*[^'")]*(^|[^[:alnum:]_])(req|request|params|query|body|input|url|href)([^[:alnum:]_]|$)
-content  (^|[^[:alnum:]_])fs\.(readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream|unlink|rm|readdir)[[:space:]]*\([^)]*(^|[^[:alnum:]_])(req|request|params|query|body|input|name|path)([^[:alnum:]_]|$)
-content  (^|[^[:alnum:]_])path\.(join|resolve)[[:space:]]*\([^)]*(^|[^[:alnum:]_])(req|request|params|query|body|input)([^[:alnum:]_]|$)
+content  (SELECT|INSERT|UPDATE|DELETE|DROP|ALTER)([^[:alnum:]_]|$)[^;]*['"][[:space:]]*\+|['"][[:space:]]*\+[[:space:]]*([^;]*[^[:alnum:]_])?(WHERE|FROM|VALUES)([^[:alnum:]_]|$)
+content  \$\{[^}]*\}([^;]*[^[:alnum:]_])?(SELECT|INSERT|UPDATE|DELETE|WHERE)([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(SELECT|INSERT|UPDATE|DELETE|WHERE)([^[:alnum:]_]|$)[^;]*\$\{
+content  (^|[^[:alnum:]_])(fetch|axios|got|request|http\.get|https\.get|urllib|requests\.(get|post))[[:space:]]*\([[:space:]]*([^'")]*[^[:alnum:]_])?(req|request|params|query|body|input|url|href)([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])fs\.(readFile|readFileSync|writeFile|writeFileSync|createReadStream|createWriteStream|unlink|rm|readdir)[[:space:]]*\(([^)]*[^[:alnum:]_])?(req|request|params|query|body|input|name|path)([^[:alnum:]_]|$)
+content  (^|[^[:alnum:]_])path\.(join|resolve)[[:space:]]*\(([^)]*[^[:alnum:]_])?(req|request|params|query|body|input)([^[:alnum:]_]|$)
 content  (^|[^[:alnum:]_])Set-Cookie([^[:alnum:]_]|$)|(^|[^[:alnum:]_])res\.cookie[[:space:]]*\(|(^|[^[:alnum:]_])cookies?\.set[[:space:]]*\(
 content  Access-Control-Allow-Origin|(^|[^[:alnum:]_])cors[[:space:]]*\(
 content  (^|[^[:alnum:]_])dangerouslySetInnerHTML([^[:alnum:]_]|$)|(^|[^[:alnum:]_])innerHTML[[:space:]]*=|(^|[^[:alnum:]_])bypassSecurityTrust|(^|[^[:alnum:]_])v-html([^[:alnum:]_]|$)
