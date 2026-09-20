@@ -2,7 +2,9 @@
 """/ai-review 突合補助: JEV（TypeSafe AI System One）で指摘を型付き判定する。
 
 使い方:
-  jev-judge.py --findings <findings.json> --out <jev.json>
+  jev-judge.py --findings <findings.json> --out <jev.json> [--escalation <escalation.json>]
+    --escalation を渡すと secret_paths が空でない場合に何も送らず available=false で終了する（スクリプト側のガード）。
+    加えて各指摘文を秘密情報パターン（鍵・トークン・パスワード代入・PEM）で走査し、該当する指摘は送らない。
 
 入力 findings.json（オーケストレータ＝Claude が両レビュー出力から書き起こす）:
   [
@@ -18,7 +20,8 @@
 
 方針（DESIGN-v2.md §10）:
   - JEV は指摘を落とさない・裁定しない。突合の「型付け」と検証順の優先付けにだけ使う。
-  - フェイルセーフ: キー無し / API エラー / タイムアウトなら available=false を書いて exit 0。ゲートの成否に影響させない。
+  - フェイルセーフ: キー無し / API エラー / タイムアウト / 入力不正なら available=false を書いて exit 0。ゲートの成否に影響させない。
+    1 件でも呼び出しに失敗したら結果全体を available=false にする（部分結果を「完全な型付け」として使わせない）。
   - 秘密情報: 呼び出し側（SKILL.md §3.2）が secret_paths ありのとき本スクリプトを起動しない。
   - 経路（優先順）: ① TypeSafe 直接 API（https://api.typesafe.ai/v1/systemone、model jev-latest）: env TYPESAFE_API_KEY
     ② Vercel AI Gateway の TypeSafe 互換 API（https://ai-gateway.vercel.sh/typesafe/v1/systemone、model typesafe-ai/jev）: env AI_GATEWAY_API_KEY
@@ -26,7 +29,7 @@
   - severity は criteria の添字 0..3 の期待値（連続値）。legend/probabilities も保存する。
   - テスト: AI_REVIEW_JEV_MOCK=1 で API を呼ばず決定的なダミー値を返す。
 """
-import argparse, json, os, sys, time, urllib.request, urllib.error
+import argparse, json, os, re, sys, time, urllib.request, urllib.error
 from pathlib import Path
 
 ROUTES = [  # (env key name, endpoint, model)
@@ -45,6 +48,11 @@ SEVERITY_Q = "How likely is this finding to be exploitable in practice, based on
 SEVERITY_CRITERIA = ["theoretical or not exploitable", "exploitable only under unusual conditions",
                      "plausibly exploitable with attacker-controlled input", "directly exploitable as described"]
 SAME_Q = "Do finding A and finding B describe the same underlying problem at the same code location?"
+
+# 指摘文に秘密情報らしき値が含まれていたら送らない（パス判定を補う値判定）
+SECRET_VALUE_RE = re.compile(
+    r"(-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|"
+    r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|(?i:(password|passwd|secret|api[_-]?key|token)\s*[:=]\s*['\"][^'\"]{8,}['\"]))")
 
 
 def load_route():
@@ -97,7 +105,8 @@ def mock_answers(state, questions):
                 v = 0.9 if "same_issue" == qid and "<<same>>" in s else 0.2
             out[qid] = {"type": "noul", "noul": v}
         elif q["type"] == "score":
-            out[qid] = {"type": "score", "score": 4 if "exec(" in s else 2, "confidence": 0.7}
+            # criteria の添字 0..3 の範囲に収める（実 API と同じ値域）
+            out[qid] = {"type": "score", "score": 3 if "exec(" in s else 1, "confidence": 0.7}
     return {"model": "mock", "answers": out}
 
 
@@ -105,21 +114,52 @@ def truncate(text):
     return text if len(text) <= STATE_MAX_CHARS else text[:STATE_MAX_CHARS] + "\n[truncated]"
 
 
+def write_out(path, result):
+    try:
+        Path(path).write_text(json.dumps(result, ensure_ascii=False, indent=2))
+    except OSError as e:  # 書けなくてもゲートを止めない。stderr に残すだけ
+        print(f"jev-judge: cannot write {path}: {e}", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--findings", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--escalation", default="")
     args = ap.parse_args()
-    findings = json.loads(Path(args.findings).read_text())
     mock = os.environ.get("AI_REVIEW_JEV_MOCK") == "1"
     route = ("mock", "mock", "mock") if mock else load_route()
     result = {"available": False, "reason": "", "model": route[2], "endpoint": route[1], "findings": {}, "pairs": []}
+    # 入力の検証。壊れていても例外で落とさず available=false で返す
+    try:
+        findings = json.loads(Path(args.findings).read_text())
+        assert isinstance(findings, list)
+        for i, f in enumerate(findings):
+            assert isinstance(f, dict) and f.get("id") and f.get("text") is not None, f"findings[{i}] に id/text が無い"
+    except Exception as e:
+        result["reason"] = f"invalid findings.json: {type(e).__name__}: {e}"[:300]
+        write_out(args.out, result); return 0
+    if args.escalation:
+        try:
+            esc = json.loads(Path(args.escalation).read_text())
+            if esc.get("secret_paths"):
+                result["reason"] = "secret_paths present; nothing sent to JEV"
+                write_out(args.out, result); return 0
+        except Exception as e:
+            result["reason"] = f"cannot read escalation.json ({type(e).__name__}); nothing sent"
+            write_out(args.out, result); return 0
+    redacted = [f["id"] for f in findings if SECRET_VALUE_RE.search(str(f.get("text", "")))]
+    if redacted:
+        findings = [f for f in findings if f["id"] not in redacted]
+        result["redacted"] = redacted
     if not mock and not route[0]:
         result["reason"] = "TYPESAFE_API_KEY / AI_GATEWAY_API_KEY not set (env or ~/.config/ai-review/jev.env)"
-        Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=2)); return 0
+        write_out(args.out, result); return 0
 
     def ask(state, questions):
         if mock:
+            if os.environ.get("AI_REVIEW_JEV_MOCK_FAIL") == "1" and "same_issue" in questions:
+                return None, "mock failure"
             return mock_answers(state, questions), None
         return call(route, state, questions)
 
@@ -159,13 +199,14 @@ def main():
                 errors.append(f"{a['id']}x{b['id']}: {err}"); continue
             result["pairs"].append({"a": a["id"], "b": b["id"],
                                     "same_issue": resp.get("answers", {}).get("same_issue", {}).get("noul")})
-    if result["findings"] or (not findings):
-        result["available"] = True
+    # 1 件でも失敗したら全体を不可にする（部分結果で突合させない）
     if errors:
-        result["reason"] = "; ".join(errors)[:1000]
-        if not result["findings"]:
-            result["available"] = False
-    Path(args.out).write_text(json.dumps(result, ensure_ascii=False, indent=2))
+        result["available"] = False
+        result["reason"] = "partial failure; JEV results discarded: " + "; ".join(errors)[:900]
+        result["findings"], result["pairs"] = {}, []
+    else:
+        result["available"] = True
+    write_out(args.out, result)
     return 0
 
 
