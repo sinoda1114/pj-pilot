@@ -208,7 +208,11 @@ claude -p --model claude-opus-5 --effort high "/security-review"
 | ④ 突合 | ◎ | 指摘ごとに `is_security` / `assumption` / `severity`、code-review × codex の同一ファイルペアに `same_issue` |
 | ⑥ verdict | ✗ | 重大度から決定的に決まる |
 
+<<<<<<< Updated upstream
 - 原則: JEV は指摘を落とさない・裁定しない。`assumption ≥ 0.5` を検証順の先頭に回す（ベンチ FP 2 件の根本原因＝helper 未確認を機械的に検出するため）
+=======
+- 原則: JEV は指摘を落とさない・裁定しない。当初案は「`assumption ≥ 0.5` を検証順の先頭に回す」だったが、下記の測定で本物と誤検知を区別できないと判明し、assumption/severity は参考値のみとした（検証順にも判定にも使わない）。D 条件は追加方向にだけ使い、既存の昇格を解除しない
+>>>>>>> Stashed changes
 - フェイルセーフ: キー無し・API エラーは `available=false` で素通り。ゲートの成否に影響させない
 - 経路（2026-09-20 実測）: **TypeSafe 直接 API** `POST https://api.typesafe.ai/v1/systemone`（model `jev-latest`、実体 jev-1.13.0）が 200 / 0.6 秒で動作。テスト用キー（ユーザー提供、後日削除予定）で 4 指摘 + ペア判定 5 呼び出し 2.9 秒。代替は Vercel AI Gateway の TypeSafe 互換 API（`POST https://ai-gateway.vercel.sh/typesafe/v1/systemone`、model `typesafe-ai/jev`、$0.042/M 入力、出力無料）。Cloudflare Workers AI には未収載（2026-09-20 実測、setsumei の記述は誤り）。直接 API は待機リスト
 - キー: `vercel ai-gateway api-keys create --name ai-review-jev --budget 5 --refresh-period monthly` で作成し `~/.config/ai-review/jev.env` に保存（2026-09-20）。**AI Gateway はクレジットカード登録が無いと 403** を返す。登録はユーザー操作

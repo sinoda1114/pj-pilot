@@ -100,10 +100,17 @@ $SKILL/scripts/run-reviews.sh --out "$run" --no-codex         # 秘密情報混�
 **既定では行わない。** ユーザーが `/ai-review --jev` と明示したか、環境変数 `AI_REVIEW_JEV=1` のときだけ行う（2026-09-20 の効果測定で「怪しい指摘の見分け」に効かないと判明したため自動発動にしない。DESIGN-v2.md §10）。キーは `~/.config/ai-review/jev.env`（`TYPESAFE_API_KEY=` か `AI_GATEWAY_API_KEY=`）。無ければ `available=false` で素通り。`secret_paths` が空でなければ行わない（指摘文も外部に出さない）。
 
 1. 両出力から指摘を 1 件ずつ書き起こし `$run/findings.json` に保存する（形式は `jev-judge.py` 冒頭のとおり。`text` は issue・根拠・fix をそのまま）
+<<<<<<< Updated upstream
 2. `python3 $SKILL/scripts/jev-judge.py --findings "$run/findings.json" --out "$run/jev.json"`
 3. `jev.json` の `available` が false なら「JEV 未使用（理由）」とレポートに 1 行書いて通常どおり進む。ゲートの成否には影響させない
 4. available なら次のように使う。**JEV は指摘を落とさない・裁定しない**
    - `is_security ≥ 0.5` の指摘があれば D 条件（`escalate=true`）。自分の分類と食い違えば JEV 側を採用する（正解率 95.6%、機械判定を優先）
+=======
+2. `python3 $SKILL/scripts/jev-judge.py --findings "$run/findings.json" --out "$run/jev.json" --escalation "$run/escalation.json"`（スクリプト側でも `secret_paths` があれば送信しない。指摘文に鍵やトークンらしき値があればその指摘は送らない）
+3. `jev.json` の `available` が false なら「JEV 未使用（理由）」とレポートに 1 行書いて通常どおり進む。1 件でも呼び出しに失敗すると全体が false になる（部分結果は使わない）。ゲートの成否には影響させない
+4. available なら次のように使う。**JEV は指摘を落とさない・裁定しない**
+   - `is_security ≥ 0.5` の指摘があれば D 条件（`escalate=true`）。**追加方向にだけ**使う: JEV が 0.5 未満でも、自分がセキュリティ分類と判断した指摘の D 条件は解除しない（昇格は一方向）
+>>>>>>> Stashed changes
    - `pairs` の `same_issue ≥ 0.7` を「両方が指摘」のペアリングに使う（一致率 96.7%）。自分の判断と食い違えば両方を記録する
    - `assumption` と `severity` は**判定にも検証順にも使わない**（本物と誤検知を区別できない: AUC 0.50 / 0.53）。レポートの「JEV 票」列に参考値として残すだけ
    - 検証順は従来どおり: 仮定に依存する文面の指摘は自分で見つけて参照先コードを Read する
