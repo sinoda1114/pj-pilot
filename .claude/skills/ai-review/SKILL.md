@@ -28,7 +28,8 @@ push 前の**唯一のゲート**。レビュー本体は書かない。組み�
 | `scripts/record-gate.sh` | `latest.json` を書く（pre-push フックが読む） |
 | `escalation-rules.txt` | 昇格パターンの既定。プロジェクト追記は `.ai-review/escalation-rules.local.txt` |
 | `hooks/pre-push` | ブロック型フック（`~/.git-hooks/pre-push` に配置して使う） |
-| `scripts/jev-judge.py` | 任意。JEV（TypeSafe System One）で指摘を型付き判定（セキュリティ分類／仮定依存／実害スコア／同一指摘ペアリング）。フェイルセーフ |
+| `scripts/jev-judge.py` | 任意（`--jev` 時のみ）。JEV で指摘を型付き判定（セキュリティ分類／同一指摘ペアリング）。フェイルセーフ |
+| `scripts/jev-escalation.py` | 昇格トリガー F。差分の内容を JEV に見せ「認証・認可・決済・永続データの挙動を変えるか」の確率を返す。キーがあれば既定で動く。追加方向のみ・フェイルセーフ |
 
 `$SKILL` = `~/.claude/skills/ai-review` として以下に記す。
 
@@ -60,6 +61,11 @@ cat "$run/escalation.json"
 - `error` があれば内容を伝えて中断。
 - `secret_paths` が空でなければ、**Codex を起動しない**（外部モデルに秘密情報を送らない）。ファイル名だけレポートに載せ、`--no-codex` で続行する。
 - `escalate` と `reasons` を保持する（⑤で使う）。
+- **トリガー F（JEV、追加方向のみ）**: `AI_REVIEW_JEV=0` でなければ実行する。キー（`~/.config/ai-review/jev.env` または環境変数 `TYPESAFE_API_KEY` / `AI_GATEWAY_API_KEY`）が無ければスクリプトが `available=false` を返すだけで害はない。`secret_paths` の検査はスクリプト側でも行う（`--escalation` を必ず渡す）。
+  ```bash
+  python3 $SKILL/scripts/jev-escalation.py --base <base> --escalation "$run/escalation.json" > "$run/jev-escalation.json"   # --local のときは --base の代わりに --local
+  ```
+  `escalate` が true なら `reasons` に `F:jev:<確率>` を足して `escalate=true` にする。false や `available=false` のときは**何もしない**（grep の結果を下げない）。根拠は DESIGN-v2.md §10（30 PR の測定で grep の見逃し 1 件を救い、余計な昇格 0 件）。
 - `--local` のとき、`/code-review` は staged 差分しか見ないため、起動前に index へ足す必要がある。**`git reset -q` で戻してはいけない**。pathspec なしの mixed reset は元の部分ステージを復元せず全て unstage するうえ、マージ・リベース・cherry-pick の進行中なら `MERGE_HEAD` 等を消して中断させる。次の手順を守る。
 
 ```bash
