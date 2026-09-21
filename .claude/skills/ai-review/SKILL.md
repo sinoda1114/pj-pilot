@@ -61,9 +61,9 @@ cat "$run/escalation.json"
 - `error` があれば内容を伝えて中断。
 - `secret_paths` が空でなければ、**Codex を起動しない**（外部モデルに秘密情報を送らない）。ファイル名だけレポートに載せ、`--no-codex` で続行する。
 - `escalate` と `reasons` を保持する（⑤で使う）。
-- **トリガー F（JEV、追加方向のみ）**: `secret_paths` が空で、`~/.config/ai-review/jev.env` にキーがあれば実行する（`AI_REVIEW_JEV=0` で無効化可）。
+- **トリガー F（JEV、追加方向のみ）**: `AI_REVIEW_JEV=0` でなければ実行する。キー（`~/.config/ai-review/jev.env` または環境変数 `TYPESAFE_API_KEY` / `AI_GATEWAY_API_KEY`）が無ければスクリプトが `available=false` を返すだけで害はない。`secret_paths` の検査はスクリプト側でも行う（`--escalation` を必ず渡す）。
   ```bash
-  python3 $SKILL/scripts/jev-escalation.py --base <base> > "$run/jev-escalation.json"   # --local のときは --local
+  python3 $SKILL/scripts/jev-escalation.py --base <base> --escalation "$run/escalation.json" > "$run/jev-escalation.json"   # --local のときは --base の代わりに --local
   ```
   `escalate` が true なら `reasons` に `F:jev:<確率>` を足して `escalate=true` にする。false や `available=false` のときは**何もしない**（grep の結果を下げない）。根拠は DESIGN-v2.md §10（30 PR の測定で grep の見逃し 1 件を救い、余計な昇格 0 件）。
 - `--local` のとき、`/code-review` は staged 差分しか見ないため、起動前に index へ足す必要がある。**`git reset -q` で戻してはいけない**。pathspec なしの mixed reset は元の部分ステージを復元せず全て unstage するうえ、マージ・リベース・cherry-pick の進行中なら `MERGE_HEAD` 等を消して中断させる。次の手順を守る。
