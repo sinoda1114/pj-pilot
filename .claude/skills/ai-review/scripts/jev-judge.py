@@ -37,6 +37,8 @@ ROUTES = [  # (env key name, endpoint, model)
     ("AI_GATEWAY_API_KEY", "https://ai-gateway.vercel.sh/typesafe/v1/systemone", "typesafe-ai/jev"),
 ]
 TIMEOUT_SEC = 20
+# Cloudflare が urllib 既定の UA（Python-urllib/3.x）を error code 1010 で遮断する（2026-09-23 実測）。
+USER_AGENT = "ai-review-jev/2 (+https://github.com/sinoda1114)"
 STATE_MAX_CHARS = 12000  # 64k トークン上限に対して十分小さく
 
 SECURITY_Q = ("Is this review finding a security vulnerability, i.e. injection (SQL/command/LDAP/XPath), "
@@ -70,20 +72,39 @@ def load_route():
     return "", "", ""
 
 
+CONTROL_RE = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")   # ANSI エスケープや NUL をログに流さない
+
+
+def http_error_detail(e, key):
+    """HTTPError の応答本文の先頭 120 文字。鍵は伏せ、制御文字は除く。本文が読めなければ空文字。"""
+    limit = 4096 + len(key)
+    try:
+        data = e.read(limit)
+    except Exception:
+        return ""
+    raw = data.decode(errors="replace")
+    if key:
+        raw = raw.replace(key, "<key>")
+        if len(data) >= limit:
+            # 上限で鍵が途中まで入っていると完全一致で伏せられず、空白を畳むと先頭 120 字へ寄ってくる。末尾を捨てる
+            raw = raw[:-len(key)]
+    return " ".join(CONTROL_RE.sub("", raw).split())[:120]
+
+
 def call(route, state, questions):
     key, endpoint, model = route
     body = json.dumps({"model": model, "state": state, "questions": questions}).encode()
     req = urllib.request.Request(endpoint, data=body, method="POST", headers={
-        "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        "Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": USER_AGENT})
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT_SEC) as r:
                 return json.loads(r.read().decode()), None
         except urllib.error.HTTPError as e:
-            msg = e.read().decode(errors="replace")[:300]
             if e.code in (429, 529) and attempt < 2:
                 time.sleep(2 ** attempt); continue
-            return None, f"HTTP {e.code}: {msg}"
+            detail = http_error_detail(e, key)
+            return None, f"HTTP {e.code}: {detail}" if detail else f"HTTP {e.code}"
         except Exception as e:  # timeout, network
             if attempt < 2:
                 time.sleep(2 ** attempt); continue

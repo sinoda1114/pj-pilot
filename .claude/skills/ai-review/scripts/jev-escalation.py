@@ -19,6 +19,8 @@ import argparse, json, os, re, subprocess, sys, time, urllib.request, urllib.err
 from pathlib import Path
 
 ENDPOINT, MODEL = "https://api.typesafe.ai/v1/systemone", "jev-latest"
+# Cloudflare が urllib 既定の UA（Python-urllib/3.x）を error code 1010 で遮断する（2026-09-23 実測）。
+USER_AGENT = "ai-review-jev/2 (+https://github.com/sinoda1114)"
 GATEWAY = ("https://ai-gateway.vercel.sh/typesafe/v1/systemone", "typesafe-ai/jev")
 Q = ("Does this code change modify authentication, authorization, session or token handling, payment or billing, "
      "or the shape or behavior of persistently stored data (database schema, migrations, storage formats)? "
@@ -90,10 +92,29 @@ def split_chunks(diff):
     return chunks[:MAX_CHUNKS]
 
 
+CONTROL_RE = re.compile(r"[\x00-\x08\x0e-\x1f\x7f]")   # ANSI エスケープや NUL をログに流さない
+
+
+def http_error_detail(e, key):
+    """HTTPError の応答本文の先頭 120 文字。鍵は伏せ、制御文字は除く。本文が読めなければ空文字。"""
+    limit = 4096 + len(key)
+    try:
+        data = e.read(limit)
+    except Exception:
+        return ""
+    raw = data.decode(errors="replace")
+    if key:
+        raw = raw.replace(key, "<key>")
+        if len(data) >= limit:
+            # 上限で鍵が途中まで入っていると完全一致で伏せられず、空白を畳むと先頭 120 字へ寄ってくる。末尾を捨てる
+            raw = raw[:-len(key)]
+    return " ".join(CONTROL_RE.sub("", raw).split())[:120]
+
+
 def ask(route, state):
     key, ep, model = route
     body = json.dumps({"model": model, "state": state, "questions": {"risk": {"type": "noul", "instructions": Q}}}).encode()
-    req = urllib.request.Request(ep, data=body, method="POST", headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    req = urllib.request.Request(ep, data=body, method="POST", headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json", "User-Agent": USER_AGENT})
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=25) as r:
@@ -107,7 +128,8 @@ def ask(route, state):
         except urllib.error.HTTPError as e:
             if e.code in (429, 529) and attempt < 2:
                 time.sleep(2 ** attempt); continue
-            return None, f"HTTP {e.code}"
+            detail = http_error_detail(e, key)
+            return None, f"HTTP {e.code}: {detail}" if detail else f"HTTP {e.code}"
         except Exception as e:
             if attempt < 2:
                 time.sleep(2 ** attempt); continue
