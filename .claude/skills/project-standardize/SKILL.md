@@ -1,9 +1,9 @@
 ---
 name: project-standardize
-description: 既存リポジトリに標準の運用・管理ルールを当てる。プロジェクト固有値の確定、プレースホルダ穴埋め、GitHub 初期セットアップ（origin/HEAD / type ラベル / Project 板）、デプロイ連携確認までを行う。「運用ルールを当てる」「プロジェクト初期化」「standardize」「GitHub のセットアップして」等で使う。リポジトリ作成そのものはローカル専用のため対象外。
+description: 既存リポジトリに標準の運用・管理ルールを当てる。プロジェクト固有値の確定、プレースホルダ穴埋め、GitHub 初期セットアップ（origin/HEAD / Project 板）、デプロイ連携確認までを行う。type ラベル・CI・dependabot・骨格 AGENTS.md は ci-standard の sweeper が翌朝自動で揃える。「運用ルールを当てる」「プロジェクト初期化」「standardize」「GitHub のセットアップして」等で使う。リポジトリ作成そのものはローカル専用のため対象外。
 metadata:
   author: sinoda
-  version: "1.0"
+  version: "1.1"
 ---
 
 # project-standardize

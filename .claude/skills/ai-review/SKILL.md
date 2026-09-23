@@ -1,6 +1,6 @@
 ---
 name: ai-review
-description: Push 前の唯一の AI レビューゲート。組み込み /code-review（Opus 5）と Codex 純正 review（gpt-5.6-sol）をブラインドで並列起動し、突合して Markdown/HTML レポートを .review-reports/ に保存。高リスク差分は /security-review を自動で追加起動する。Use when the user types /ai-review, or asks to "レビューして", "push 前に見て", "ブランチをレビュー", "未コミットをレビュー". Does NOT modify source code.
+description: Push 前の唯一の AI レビューゲート。/code-review（Opus 5.5。実体は ~/.claude/commands/code-review.md の ECC 版）と Codex 純正 review（gpt-6-sol）をブラインドで並列起動し、突合して Markdown/HTML レポートを .review-reports/ に保存。高リスク差分は /security-review を自動で追加起動する。Use when the user types /ai-review, or asks to "レビューして", "push 前に見て", "ブランチをレビュー", "未コミットをレビュー". Does NOT modify source code.
 metadata:
   author: sinoda
   version: 2.0.0
@@ -15,7 +15,8 @@ push 前の**唯一のゲート**。レビュー本体は書かない。組み�
 - ソースコード・設定ファイル・lockfile を変更しない。コミット・push・PR 作成をしない。
 - 書き込みは `.review-reports/` 配下のみ（レポート md/html、`latest.json`、各実行の生出力）。`--local` モードで index に触れる場合だけは例外（§3.2）。ただし**ユーザーの staged 状態を壊してはならない**。
 - レビュー観点をこのスキルが自前で持たない。判定は純正コマンドの出力に従い、自分は**突合と検証**だけを行う。
-- モデルと effort はスクリプト内で固定（Claude: `claude-opus-5`/high、Codex: `gpt-5.6-sol`/high）。セッションのモデルに関わらず固定値で走る。
+- モデルと effort はスクリプト内で固定（Claude: `claude-opus-5-5`/high、Codex: `gpt-6-sol`/high）。セッションのモデルに関わらず固定値で走る。
+- `/code-review` はユーザー環境では ECC 版（`~/.claude/commands/code-review.md`）が組み込み版を上書きして動く。2026-09-23 のベンチでは ECC 版 × Opus 5.5 が最良（0.964）だったため、この構成を正とする。
 - 昇格判定はスクリプトの grep 結果に従う。自分の判断で「これは低リスクだから昇格不要」としない。
 - 昇格をスキップできるのは**ユーザーが明示した場合のみ**。その場合は `latest.json` に記録する。
 
@@ -40,7 +41,9 @@ push 前の**唯一のゲート**。レビュー本体は書かない。組み�
 | `/ai-review`（既定） | `origin/HEAD`（merge-base）から HEAD までの**コミット済み差分** | push 前の必須ゲート |
 | `/ai-review --local` | 未コミット差分（staged + unstaged + untracked） | 途中の任意チェック。何度でも |
 
-既定モードで未コミット変更が残っていれば「先に commit してください」と伝えて中断する（ゲートは HEAD の SHA に紐づくため）。
+既定モードでは、`run-reviews.sh` が常に HEAD の clean な worktree を一時的に作り、レビュアーはそこで動く（`status.txt` に `isolated:` の行が残る）。未コミットの変更も、レビュー中に別作業が書き換えた内容も、レビュー対象に混ざらない。`.env` や `node_modules` など ignore 済みの項目は本体へのリンクで用意されるので、検証の環境は隔離前と同じ（共有の `info/exclude` には書かない）。初期化済みの submodule があるリポジトリだけは、worktree では submodule が空になるので隔離せず、`status.txt` に `WARN` を残して元の作業ツリーで動く。別作業が同居するリポジトリでは「先に commit」を守れないため、こうしている。理由と経緯は `DESIGN-v2.md` §12。
+
+未コミットの変更はレビューされず、push にも含まれない。開始時の件数が `status.txt` の `uncommitted=N` に残るので、N > 0 なら結論に「未コミット N 件はレビュー対象外で、この push にも含まれない」と書く。自分の変更の commit し忘れだった場合は、commit してから回し直すよう案内する（HEAD が動かないので、pre-push フックでは気付けない）。
 
 ## 3. 実行フロー
 
@@ -113,6 +116,7 @@ $SKILL/scripts/run-reviews.sh --out "$run" --no-codex         # 秘密情報混�
    - `pairs` の `same_issue ≥ 0.7` を「両方が指摘」のペアリングに使う（一致率 96.7%）。自分の判断と食い違えば両方を記録する
    - `assumption` と `severity` は**判定にも検証順にも使わない**（本物と誤検知を区別できない: AUC 0.50 / 0.53）。レポートの「JEV 票」列に参考値として残すだけ
    - 検証順は従来どおり: 仮定に依存する文面の指摘は自分で見つけて参照先コードを Read する
+   - 既定モードで指摘を検証するとき、読むのはコミット済みの内容（`git show HEAD:<path>`）にする。レビュアーが見たのはそれで、作業ツリーのファイルには別作業の変更が混ざっていることがある
 
 両出力を読み、指摘を 1 件ずつ次の 3 区分に振り分ける。
 
@@ -151,6 +155,8 @@ $SKILL/scripts/record-gate.sh --verdict <pass|fix|block> \
 ```
 `--local` のときは必ず `--mode local` を付ける。pre-push フックは `mode=branch` の記録しか受け付けないので、`--local` の結果で push が通ることはない。
 
+branch モードでは、`--report` に run ディレクトリ内のレポートを必ず渡す。`record-gate.sh` は `run-reviews.sh` が残した `reviewed_sha.*` と記録時の HEAD を照合し、記録が無いとき・一致しないとき（レビュー中に誰かが commit した）は拒む。拒まれたら記録せず回し直す。レビューを回さない「差分なし」の記録だけは `--no-diff` を付ける（本当に差分が無いかも確かめる）。
+
 ### 3.8 終了時の案内
 - `.gitignore` に `.review-reports/` が無ければ追記を**提案**する（自分では書き換えない）。
 - 結論を 1 行で: 「push 可」「修正後 push 可（Medium n 件）」「push 不可（High n 件）」。
@@ -170,7 +176,7 @@ $SKILL/scripts/record-gate.sh --verdict <pass|fix|block> \
 ## 対象
 - Base: origin/main (merge-base abc1234) → HEAD def5678 / branch feat/xxx
 - 変更: N files, +A/-D
-- 実行: /code-review (claude-opus-5/high, 3m12s) ‖ codex exec review (gpt-5.6-sol/high, 2m40s)
+- 実行: /code-review (claude-opus-5-5/high, 1m30s) ‖ codex exec review (gpt-6-sol/high, 1m20s)
 - レビュー対象外: .env（秘密情報のため Codex 未送信）
 
 ## High
@@ -244,8 +250,11 @@ git config --global core.hooksPath ~/.git-hooks
 |---|---|
 | Git リポジトリでない | 中断 |
 | `origin/HEAD` 未設定 | `git remote set-head origin -a` を案内して中断（`--local` は続行可） |
-| 差分なし（既定モード） | レビューは走らせず、`record-gate.sh --verdict pass --escalate false --escalation-done false --reason "no diff vs <base>"` だけ記録して終了（既に公開済みのコミットを指す新ブランチを push できるようにする）。`--local` で差分なしなら「対象なし」で終了し何も書かない |
-| 未コミット変更が残っている（既定モード） | 「先に commit」を案内して中断 |
+| 差分なし（既定モード） | レビューは走らせず、`record-gate.sh --verdict pass --escalate false --escalation-done false --no-diff --reason "no diff vs <base>"` だけ記録して終了（既に公開済みのコミットを指す新ブランチを push できるようにする）。`--local` で差分なしなら「対象なし」で終了し何も書かない |
+| 未コミット変更が残っている（既定モード） | 中断しない。常に HEAD の clean な worktree でレビューする（`isolated:`）。`uncommitted=N` が 0 でなければ、その N 件がレビュー対象外で push にも含まれないことを結論に書く |
+| worktree を作れない／初期化済みの submodule がある | `status.txt` に `WARN` が残り、元の作業ツリーで続行する。未コミットの変更が混ざって二重化が崩れている可能性を結論に書く |
+| `status.txt` に `WARN: ignore されずに見えた項目を…外した` | HEAD の `.gitignore` と作業ツリーの規則が違う（`.gitignore` の未コミット変更など）。外した項目は隔離環境に無いので、それを要る検証が飛んだ可能性を結論に書く |
+| `record-gate.sh` が「レビューした SHA と HEAD が違う」「reviewed_sha.review が見つからない」で止まる | 前者はレビュー中に HEAD が動いた（誰かが commit した）。後者は `--report` の渡し忘れ。記録せず、前者は `/ai-review` を回し直し、後者は `--report "$run/report.md"` を付けて記録し直す |
 | `codex` 未導入・失敗・タイムアウト | その旨を明記し `/code-review` 単独で続行。二重化できていないことを結論に書く |
 | `claude` 側が失敗・タイムアウト | 同様に Codex 単独で続行 |
 | 両方失敗 | `verdict=block` で記録し中断 |

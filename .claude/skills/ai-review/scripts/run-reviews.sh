@@ -11,17 +11,19 @@
 #     --timeout      各コマンドの上限秒（既定 900）
 #
 # モデル・effort は固定（DESIGN-v2.md §5）。セッションのモデルに関係なくここで指定する。
-#   Claude : claude-opus-5 / high
-#   Codex  : gpt-5.6-sol   / high
+#   Claude : claude-opus-5-5 / high  （/code-review・/security-review とも）
+#   Codex  : gpt-6-sol       / high
+#   2026-09-23 ベンチで選定（ai-review-benchmark-v2/case-110-balanced/MEASUREMENT-ISSUES.md ほか）。
+#   Opus 5.5 は CLI 2.1.280 以上が必要。既定 effort が medium なので --effort high を明示し続けること。
 #
 # 終了コード: 0 = 全て正常終了、1 = いずれかが失敗・タイムアウト・レビュアー 0 起動（status.txt に詳細）
 # 環境変数 AI_REVIEW_DRY_RUN=1 で実コマンドを起動せずダミー出力を書く（テスト用）。
 # モデル・effort は環境変数で上書きできない（固定が契約。変えるならこのファイルを直す）。
 set -uo pipefail
 
-CLAUDE_MODEL="claude-opus-5"
+CLAUDE_MODEL="claude-opus-5-5"
 CLAUDE_EFFORT="high"
-CODEX_MODEL="gpt-5.6-sol"
+CODEX_MODEL="gpt-6-sol"
 CODEX_EFFORT="high"
 
 out=""; base=""; mode="branch"; use_codex=1; security=0; timeout_sec=900
@@ -38,7 +40,11 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$out" ] || { echo "--out is required" >&2; exit 1; }
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "not a git repository" >&2; exit 1; }
-mkdir -p "$out"
+mkdir -p "$out" 2>/dev/null || { echo "cannot create --out: $out" >&2; exit 1; }
+# レビュアーは隔離用の worktree で動くので、出力先は絶対パスで固定する。
+# 解決に失敗して空になると、以降の出力が / 直下に向かうので止める。
+out="$(cd "$out" 2>/dev/null && pwd -P)"
+[ -n "$out" ] || { echo "cannot resolve --out" >&2; exit 1; }
 status="$out/status.txt"; : > "$status"
 
 # .review-reports/ をレビュー対象から外す（.git/info/exclude はコミットされないローカル設定。
@@ -62,17 +68,130 @@ resolve_base() {
 }
 [ -n "$base" ] || base="$(resolve_base)"
 
+# ---- 作業ツリーの隔離（branch / security モード）----
+# ブランチモードと昇格の対象はコミット済みの差分（base...HEAD）。ところが作業ツリーに
+# 未コミットの変更があると、Codex は HEAD の差分ではなく作業ツリーをレビューし、
+# 二重レビューが黙って 1 本に減る（2026-09-23 に ~/.claude で実測。フック 1 ファイルの
+# コミットに対し、Codex の指摘 3 件がすべて別作業の未コミット SKILL.md だった）。
+# 開始時に clean でも、レビューの数分〜15 分の間に別作業が書き換えれば同じことが起きるので、
+# 常に HEAD の clean な worktree を作ってレビュアーをそこで動かす。出力は $out（元の
+# リポジトリ、絶対パス）に書くので、record-gate.sh と pre-push フックの流れは変わらない。
+# --local は未コミットの変更を見るのが目的なので隔離しない。詳細は DESIGN-v2.md §12。
+run_cwd="$PWD"; wt=""; retry_pid=""; reviewed_sha=""
+cleanup_wt() {
+  [ -n "$wt" ] || return 0
+  git worktree remove --force "$wt" >/dev/null 2>&1 || { rm -rf "$wt"; git worktree prune >/dev/null 2>&1; }
+  wt=""
+}
+on_signal() {
+  # 止められたら、再試行中のものも含めてレビュアーを止めてから片付ける。
+  # 止めないと、worktree が消えた後もレビュアーが動き続けてトークンを使う。
+  for p in ${pids:-} ${retry_pid:-}; do kill "$p" 2>/dev/null; done
+  cleanup_wt; exit "$1"
+}
+# 本体の ignore 済みの項目（node_modules、.env、ビルド成果物など）を worktree に用意する。
+# 共有の info/exclude には書かない。同じリポジトリの他の worktree（別ブランチで .gitignore が
+# 違うことがある）の見え方まで変わり、未追跡ファイルが git add -A から漏れうるため。
+# ディレクトリは worktree に本物のディレクトリを作り、中身を一段ずつリンクする。本物の
+# ディレクトリなので .gitignore の dir/ パターンに一致して ignore され、git は中を見ない
+# （ディレクトリそのものをリンクすると dir/ パターンに一致せず、未追跡に見える）。
+# ファイルはそのままリンクする（ファイル用のパターンはリンクにも一致する）。
+link_ignored() {
+  local top="$1" dst="$2" e c
+  git -C "$top" ls-files --others --ignored --exclude-standard --directory -z 2>/dev/null |
+    while IFS= read -r -d '' e; do
+      [ -n "$e" ] || continue
+      if [ "${e%/}" != "$e" ]; then
+        e="${e%/}"
+        { [ -e "$dst/$e" ] || [ -L "$dst/$e" ]; } && [ ! -d "$dst/$e" ] && continue
+        mkdir -p "$dst/$e" || continue
+        for c in "$top/$e"/* "$top/$e"/.[!.]* "$top/$e"/..?*; do
+          { [ -e "$c" ] || [ -L "$c" ]; } || continue
+          { [ -e "$dst/$e/${c##*/}" ] || [ -L "$dst/$e/${c##*/}" ]; } || ln -s "$c" "$dst/$e/${c##*/}"
+        done
+      else
+        { [ -e "$dst/$e" ] || [ -L "$dst/$e" ]; } && continue
+        mkdir -p "$dst/$(dirname "$e")" && ln -s "$top/$e" "$dst/$e"
+      fi
+    done
+}
+if [ "$mode" != "local" ]; then
+  reviewed_sha="$(git rev-parse HEAD)"
+  top="$(git rev-parse --show-toplevel)"
+  tmp_root="${TMPDIR:-/tmp}"; tmp_root="${tmp_root%/}"
+  # SIGKILL などで EXIT の trap が走らずに残った隔離用の worktree を回収する。
+  # ディレクトリ名に作成したプロセスの PID を入れてあるので、そのプロセスがいなければ孤児とみなす。
+  git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | while IFS= read -r w; do
+    b="${w##*/}"
+    case "$b" in ai-review-wt.*) ;; *) continue ;; esac
+    opid="${b#ai-review-wt.}"; opid="${opid%%.*}"
+    case "$opid" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$opid" 2>/dev/null && continue
+    git worktree remove --force "$w" >/dev/null 2>&1 || rm -rf "$w"
+    echo "reclaimed: 前回の実行が残した worktree を回収した ($w)" >> "$status"
+  done
+  git worktree prune >/dev/null 2>&1
+  # レビュー対象外になる未コミットの件数を残す（突合で「push にも含まれない」と書くため）
+  echo "uncommitted=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')" >> "$status"
+  if [ -f "$top/.gitmodules" ] && git -C "$top" submodule status 2>/dev/null | grep -q '^[^-]'; then
+    # worktree に移すと submodule が空になり、import・ビルド・参照先の確認が壊れる。
+    # 隔離前と同じく元の作業ツリーで動かす（その代わり未コミットの変更が混ざりうる）
+    echo "WARN: 初期化済みの submodule があるため隔離せず、元の作業ツリーでレビューする（未コミットの変更が混ざる可能性あり）" >> "$status"
+  else
+    wt="$(mktemp -d "$tmp_root/ai-review-wt.$$.XXXXXX" 2>/dev/null)" || wt=""
+    if [ -n "$wt" ]; then
+      trap cleanup_wt EXIT
+      trap 'on_signal 143' TERM
+      trap 'on_signal 130' INT
+    fi
+    if [ -n "$wt" ] && git worktree add -q --detach "$wt" "$reviewed_sha" >/dev/null 2>&1; then
+      link_ignored "$top" "$wt"
+      # HEAD の .gitignore では ignore されない項目（作業ツリーの .gitignore が未コミットで
+      # 変わっている等）は未追跡に見え、Codex がレビュー対象に含める。持ち込まずに外す。
+      # 作ったばかりの worktree で未追跡なのは、ここで持ち込んだものだけ。
+      leaked="$(git -C "$wt" status --porcelain 2>/dev/null | sed -n 's/^?? //p')"
+      if [ -n "$leaked" ]; then
+        printf '%s\n' "$leaked" | while IFS= read -r l; do rm -rf "${wt:?}/${l%/}"; done
+        echo "WARN: ignore されずに見えた項目を隔離環境から外した（$(printf '%s\n' "$leaked" | wc -l | tr -d ' ') 件。HEAD の .gitignore と作業ツリーの規則が違う）" >> "$status"
+      fi
+      rel="$(git rev-parse --show-prefix)"
+      run_cwd="$wt/$rel"; [ -d "$run_cwd" ] || run_cwd="$wt"
+      echo "isolated: HEAD $(git rev-parse --short "$reviewed_sha") の clean な worktree でレビューする ($wt)" >> "$status"
+    else
+      [ -n "$wt" ] && rm -rf "$wt"; wt=""
+      echo "WARN: worktree を作れなかったため元の作業ツリーでレビューする（未コミットの変更が混ざる可能性あり）" >> "$status"
+    fi
+  fi
+  # record-gate.sh が HEAD と照合する（レビュー中に HEAD が動いたら記録を拒む）
+  printf '%s\n' "$reviewed_sha" > "$out/reviewed_sha.$([ $security -eq 1 ] && echo security || echo review)"
+fi
+
 # ---- 起動 ----
 # run_bg <name> <cmd...> : バックグラウンド起動し pid を返す。stdout は <out>/<name>.md、stderr は <name>.err
 pids=""; names=""
 run_bg() {
   local name="$1"; shift
   if [ "${AI_REVIEW_DRY_RUN:-0}" = "1" ]; then
-    { echo "# DRY RUN: $name"; echo "cmd: $*"; } > "$out/$name.md"
     : > "$out/$name.err"
-    # 実行時と同じ後処理を通すため、Codex は -o 相当の最終回答ファイルも作る
-    [ "$name" = "codex-review" ] && cp "$out/$name.md" "$out/codex-review.last"
-    ( sleep 1 ) &
+    if [ "${AI_REVIEW_DRY_EMPTY:-0}" = "1" ]; then
+      # 空出力を作り、再試行の経路を通す（再試行するコマンドは sleep で代用する）
+      printf '%s\0' sleep 30 > "$out/$name.cmd"; : > "$out/$name.md"
+      ( sleep 1 ) &
+    else
+      # レビュアーが終わる時点の、実際に動いている場所の状態を記録する（隔離のテスト用）
+      ( sleep "${AI_REVIEW_DRY_SLEEP:-1}"
+        cd "$run_cwd" && {
+          echo "# DRY RUN: $name"; echo "cmd: $*"; echo "cwd: $(pwd -P)"
+          echo "head: $(git rev-parse --short HEAD)"
+          echo "uncommitted: $(git status --porcelain | wc -l | tr -d ' ')"
+          echo "node_modules: $([ -n "$(ls -A node_modules 2>/dev/null)" ] && echo yes || echo no)"
+          echo "dotenv: $([ -e .env ] && echo yes || echo no)"
+        } > "$out/$name.md"
+        # 実行時と同じ後処理を通すため、Codex は -o 相当の最終回答ファイルも作る。
+        # `[ ] && cp` で終えると code-review では偽になり、終了コード 1 で「失敗」扱いになる
+        if [ "$name" = "codex-review" ]; then cp "$out/$name.md" "$out/codex-review.last"; fi
+      ) &
+    fi
   else
     # stdin は必ず /dev/null に落とす。claude -p も codex exec も stdin を待つため、
     # バックグラウンドで親の stdin を継承すると EOF が来ず、空出力のまま終わる
@@ -83,7 +202,7 @@ run_bg() {
     # exec でサブシェルを置き換える。こうしないと $! はラッパーのサブシェル PID になり、
     # タイムアウト時に kill してもレビュアー本体が生き残って .md を書き続ける
     # （書きかけの出力を完成品として ok 判定してしまう）。
-    ( exec "$@" < /dev/null > "$out/$name.md" 2> "$out/$name.err" ) &
+    ( cd "$run_cwd" && exec "$@" < /dev/null > "$out/$name.md" 2> "$out/$name.err" ) &
   fi
   pids="$pids $!"; names="$names $name"
   echo "started $name pid=$! $(date +%H:%M:%S)" >> "$status"
@@ -203,15 +322,15 @@ for n in $names; do
   case " $failed " in *" $n "*) continue ;; esac
   if [ ! -s "$out/$n.md" ] || [ ! -f "$out/$n.cmd" ]; then
     [ -f "$out/$n.cmd" ] || continue
-    echo "retry $n (空出力: 並列衝突とみなし単独で再実行) $(date +%H:%M:%S)" >> "$status"
     retry_cmd=()
     while IFS= read -r -d '' arg; do retry_cmd+=("$arg"); done < "$out/$n.cmd"
     if [ ${#retry_cmd[@]} -gt 0 ]; then
       # 再試行にも初回と同じタイムアウトと終了コード記録を適用する。
       # 同期実行 + `|| true` だと、途中まで出力して落ちた再試行が ok 扱いになり、
       # 応答待ちで止まるとゲート全体が戻らない。
-      ( exec "${retry_cmd[@]}" < /dev/null > "$out/$n.md" 2>> "$out/$n.err" ) &
-      rp=$!; re=0
+      ( cd "$run_cwd" && exec "${retry_cmd[@]}" < /dev/null > "$out/$n.md" 2>> "$out/$n.err" ) &
+      rp=$!; retry_pid="$rp"; re=0
+      echo "retry $n pid=$rp (空出力: 並列衝突とみなし単独で再実行) $(date +%H:%M:%S)" >> "$status"
       while kill -0 "$rp" 2>/dev/null; do
         if [ "$re" -ge "$timeout_sec" ]; then
           kill "$rp" 2>/dev/null; sleep 2; kill -9 "$rp" 2>/dev/null
@@ -220,6 +339,7 @@ for n in $names; do
         sleep 3; re=$((re + 3))
       done
       if wait "$rp" 2>/dev/null; then :; else is_timed_out "$n" || failed="$failed $n"; fi
+      retry_pid=""
       # Codex は -o の最終回答を正とするため、退避を再適用する
       if [ "$n" = "codex-review" ] && [ -f "$out/codex-review.last" ]; then
         mv "$out/codex-review.md" "$out/codex-review.log" 2>/dev/null || true
@@ -251,6 +371,6 @@ for n in $names; do
     echo "EMPTY $n (see $n.err)" >> "$status"; rc_all=1
   fi
 done
-echo "elapsed=${elapsed}s base=$base mode=$mode" >> "$status"
+echo "elapsed=${elapsed}s base=$base mode=$mode isolated=$([ -n "$wt" ] && echo yes || echo no)" >> "$status"
 cat "$status"
 exit $rc_all
