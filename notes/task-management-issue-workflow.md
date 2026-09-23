@@ -113,11 +113,12 @@
 
 ## ラベル仕様
 
-状態ラベルは使わない（状態は Project カラム）。種類ラベルのみ:
+状態ラベルは使わない（状態は Project カラム）。種類ラベルは Conventional Commits の type に対応する 7 種で、
+ci-standard の sweeper が毎朝全リポジトリに作成・是正する（手で作らない。正本は `ci-standard/repo-policy.yml`）:
 
-`type:bug` / `type:feature` / `type:content` / `type:i18n` / `type:legal` / `type:billing` / `type:data` / `type:mobile` / `type:ops`
+`type:feat` / `type:fix` / `type:refactor` / `type:perf` / `type:test` / `type:docs` / `type:chore`
 
-担当/領域ラベルは必要に応じて追加する。
+担当/領域ラベルは必要に応じて追加する（sweeper は消さない）。
 
 ## PR との紐付け
 
