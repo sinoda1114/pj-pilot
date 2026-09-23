@@ -1,4 +1,5 @@
-# /ai-review 昇格ルール（/security-review を自動起動する条件）
+# /ai-review 昇格ルール（セキュリティの深掘り own-security を自動起動する条件）
+# path ルールは、MUST-ADDRESS の項目を「高リスク（人の承認が要る）」にする判定にも使う（gate.py）。
 #
 # 形式: 1 行 1 ルール。「<種別> <正規表現>」。空行と # 行は無視。
 #   path     変更ファイルのパス（git diff --name-only）に対する ERE。大文字小文字無視
