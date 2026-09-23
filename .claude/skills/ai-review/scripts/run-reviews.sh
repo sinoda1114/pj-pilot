@@ -97,10 +97,25 @@ on_signal() {
 # （ディレクトリそのものをリンクすると dir/ パターンに一致せず、未追跡に見える）。
 # ファイルはそのままリンクする（ファイル用のパターンはリンクにも一致する）。
 link_ignored() {
-  local top="$1" dst="$2" e c
+  local top="$1" dst="$2" e c er
   git -C "$top" ls-files --others --ignored --exclude-standard --directory -z 2>/dev/null |
     while IFS= read -r -d '' e; do
       [ -n "$e" ] || continue
+      # レビューの出力置き場は、どこにあっても持ち込まない。持ち込むと、並列で動く他方の
+      # レビュアーの書きかけの出力を読めてしまい、ブラインドで回す意味が崩れる。
+      # サブディレクトリから起動すると sub/.review-reports になるので、名前で外す。
+      case "/${e%/}/" in */.review-reports/*) continue ;; esac
+      # --out は任意の場所を指せるので、実際の出力先とも比べる。シンボリックリンクを経由した
+      # 指定でもすり抜けないよう、リンクを解決した実パス同士で比べる（$out は pwd -P 済み）
+      er="$(cd "$top/${e%/}" 2>/dev/null && pwd -P)" || er=""
+      if [ -n "$er" ] && [ "$out" != "$top_real" ]; then
+        case "$out/" in "$er"/*)
+          # 出力先を含む項目を丸ごと外すので、その中身を要る検証が飛ぶ。黙らずに知らせる
+          echo "WARN: 出力先が ignore 済みの ${e%/} の中にあるため、${e%/} を隔離環境に持ち込まない（その中身を要る検証は飛ぶ）" >> "$status"
+          continue ;;
+        esac
+        case "$er/" in "$out"/*) continue ;; esac
+      fi
       if [ "${e%/}" != "$e" ]; then
         e="${e%/}"
         { [ -e "$dst/$e" ] || [ -L "$dst/$e" ]; } && [ ! -d "$dst/$e" ] && continue
@@ -118,15 +133,22 @@ link_ignored() {
 if [ "$mode" != "local" ]; then
   reviewed_sha="$(git rev-parse HEAD)"
   top="$(git rev-parse --show-toplevel)"
+  top_real="$(cd "$top" && pwd -P)"
   tmp_root="${TMPDIR:-/tmp}"; tmp_root="${tmp_root%/}"
   # SIGKILL などで EXIT の trap が走らずに残った隔離用の worktree を回収する。
   # ディレクトリ名に作成したプロセスの PID を入れてあるので、そのプロセスがいなければ孤児とみなす。
+  # 隔離用の worktree の中から起動されたときは、作成者がいなくてもその worktree は消さない
+  here="$(pwd -P)"
   git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | while IFS= read -r w; do
     b="${w##*/}"
     case "$b" in ai-review-wt.*) ;; *) continue ;; esac
     opid="${b#ai-review-wt.}"; opid="${opid%%.*}"
     case "$opid" in ''|*[!0-9]*) continue ;; esac
-    kill -0 "$opid" 2>/dev/null && continue
+    wreal="$(cd "$w" 2>/dev/null && pwd -P)"
+    [ -n "$wreal" ] && case "$here/" in "$wreal/"*) continue ;; esac
+    # kill -0 は別ユーザーのプロセスに EPERM を返し「いない」と誤判定し、ps は無い環境がある。
+    # どちらか一方でも「いる」と言えば生きているとみなす（誤って消すより残す方が安全）
+    { kill -0 "$opid" 2>/dev/null || ps -p "$opid" >/dev/null 2>&1; } && continue
     git worktree remove --force "$w" >/dev/null 2>&1 || rm -rf "$w"
     echo "reclaimed: 前回の実行が残した worktree を回収した ($w)" >> "$status"
   done
@@ -149,11 +171,20 @@ if [ "$mode" != "local" ]; then
       # HEAD の .gitignore では ignore されない項目（作業ツリーの .gitignore が未コミットで
       # 変わっている等）は未追跡に見え、Codex がレビュー対象に含める。持ち込まずに外す。
       # 作ったばかりの worktree で未追跡なのは、ここで持ち込んだものだけ。
-      leaked="$(git -C "$wt" status --porcelain 2>/dev/null | sed -n 's/^?? //p')"
-      if [ -n "$leaked" ]; then
-        printf '%s\n' "$leaked" | while IFS= read -r l; do rm -rf "${wt:?}/${l%/}"; done
-        echo "WARN: ignore されずに見えた項目を隔離環境から外した（$(printf '%s\n' "$leaked" | wc -l | tr -d ' ') 件。HEAD の .gitignore と作業ツリーの規則が違う）" >> "$status"
-      fi
+      # porcelain は日本語・空白・引用符を含むパスを "\346..." の形で引用して返すので、
+      # -z で生のパスを読む（引用された表示のまま rm すると何も消えない）
+      n_rm=0
+      while IFS= read -r -d '' l; do
+        case "$l" in '?? '*)
+          l="${wt:?}/${l#?? }"; l="${l%/}"
+          # rm -rf は対象が無くても 0 を返すので、あったものだけを数える
+          { [ -e "$l" ] || [ -L "$l" ]; } && rm -rf "$l" && n_rm=$((n_rm + 1)) ;;
+        esac
+      done < <(git -C "$wt" status --porcelain -z 2>/dev/null)
+      [ "$n_rm" -gt 0 ] && echo "WARN: ignore されずに見えた項目を隔離環境から外した（$n_rm 件。HEAD の .gitignore と作業ツリーの規則が違う）" >> "$status"
+      # 外す処理が 1 件も成功しなかった場合も含めて、最後に残っていないかを確かめる
+      n_left="$(git -C "$wt" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+      [ "$n_left" = "0" ] || echo "WARN: 外しきれずに隔離環境に未追跡が $n_left 件残っている。Codex のレビュー対象に混ざる" >> "$status"
       rel="$(git rev-parse --show-prefix)"
       run_cwd="$wt/$rel"; [ -d "$run_cwd" ] || run_cwd="$wt"
       echo "isolated: HEAD $(git rev-parse --short "$reviewed_sha") の clean な worktree でレビューする ($wt)" >> "$status"
@@ -186,6 +217,17 @@ run_bg() {
           echo "uncommitted: $(git status --porcelain | wc -l | tr -d ' ')"
           echo "node_modules: $([ -n "$(ls -A node_modules 2>/dev/null)" ] && echo yes || echo no)"
           echo "dotenv: $([ -e .env ] && echo yes || echo no)"
+          echo "review_reports: $([ -e .review-reports ] && echo yes || echo no)"
+          # 隔離環境のシンボリックリンクから、出力先（またはその祖先）へ届くものの数
+          n=0
+          if [ -n "$wt" ]; then
+            while IFS= read -r -d '' l; do
+              t="$(cd "$l" 2>/dev/null && pwd -P)" || continue
+              case "$t/" in "$out"/*) n=$((n + 1)); continue ;; esac
+              case "$out/" in "$t"/*) n=$((n + 1)) ;; esac
+            done < <(find "$wt" -type l -print0 2>/dev/null)
+          fi
+          echo "out_leak: $n"
         } > "$out/$name.md"
         # 実行時と同じ後処理を通すため、Codex は -o 相当の最終回答ファイルも作る。
         # `[ ] && cp` で終えると code-review では偽になり、終了コード 1 で「失敗」扱いになる

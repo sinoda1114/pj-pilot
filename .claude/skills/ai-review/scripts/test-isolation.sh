@@ -28,7 +28,7 @@ echo base > a.txt; G add -A; G commit -qm base; P origin HEAD:main || die "push"
 # 失敗を捨てると、比較元がローカルの main に落ちて本物と違う条件で試すことになる
 G fetch -q origin && G remote set-head origin main >/dev/null || die "origin/HEAD の設定"
 echo committed > a.txt; G commit -qam change
-printf 'node_modules/\n.env\n' > .gitignore; G add .gitignore; G commit -qm ignore
+printf 'node_modules/\n.env\ncache/\nlinkout\n' > .gitignore; mkdir -p sub && echo k > sub/keep.txt; G add .gitignore sub; G commit -qm ignore
 mkdir -p node_modules/pkg && echo x > node_modules/pkg/i.js; echo SECRET=1 > .env
 field(){ sed -n "s/^$3: //p" "$1/$2.md"; }
 wt_count(){ git worktree list | wc -l | tr -d ' '; }
@@ -39,6 +39,7 @@ run(){ AI_REVIEW_DRY_RUN=1 bash "$RR" "$@" >/dev/null 2>&1; }
 HEADSHA="$(git rev-parse --short HEAD)"
 
 echo "1. clean な作業ツリーでも隔離する（レビュー中に書き換えられても混ざらないように）"
+mkdir -p .review-reports/run-prev && echo "他方の書きかけ" > .review-reports/run-prev/codex-review.md
 excl_before="$(excl_now)"
 run --out "$T/o1"
 [ "$(field "$T/o1" code-review cwd)" != "$(pwd -P)" ] && ok "worktree で動く" || ng "元のリポジトリで動いた"
@@ -46,8 +47,25 @@ grep -q '^isolated:' "$T/o1/status.txt" && ok "status.txt に隔離を記録" ||
 [ "$(field "$T/o1" code-review node_modules)" = "yes" ] && ok "node_modules の中身が使える" || ng "node_modules が空"
 [ "$(field "$T/o1" code-review dotenv)" = "yes" ] && ok ".env など ignore 済みのファイルも使える" || ng ".env なし"
 [ "$(field "$T/o1" code-review uncommitted)" = "0" ] && ok "リンクが未追跡として見えない（0 件）" || ng "未コミット=$(field "$T/o1" code-review uncommitted)"
+[ "$(field "$T/o1" code-review review_reports)" = "no" ] && ok ".review-reports はリンクしない（他方の出力を読めない）" || ng ".review-reports が見える"
 [ "$(excl_now)" = "$excl_before" ] && ok "共有の info/exclude を変えない" || ng "info/exclude が変わった"
 [ "$(wt_count)" = "1" ] && ok "終了後に worktree が消える" || ng "残った: $(wt_count)"
+
+echo "1b. レビューの出力置き場を持ち込まない（どこに置いても）"
+( cd sub && AI_REVIEW_DRY_RUN=1 bash "$RR" --out .review-reports/run-sub >/dev/null 2>&1 )
+[ "$(field "$T/repo/sub/.review-reports/run-sub" code-review review_reports)" = "no" ] && ok "サブディレクトリから起動しても、ネストした .review-reports をリンクしない" || ng "ネストした .review-reports が見える"
+rm -rf sub/.review-reports
+run --out cache/review-run
+[ "$(field "$T/repo/cache/review-run" code-review out_leak)" = "0" ] && ok "--out を別の ignore 済みの場所に向けても、隔離環境から出力先へ届かない" || ng "出力先へ届く: $(field "$T/repo/cache/review-run" code-review out_leak)"
+rm -rf cache
+mkdir -p node_modules/.rev
+run --out node_modules/.rev/run
+[ "$(field "$T/repo/node_modules/.rev/run" code-review out_leak)" = "0" ] && grep -q '^WARN: 出力先が ignore 済みの node_modules の中にある' "$T/repo/node_modules/.rev/run/status.txt" && ok "出力先を含む ignore 済みの項目は持ち込まず、WARN で知らせる" || ng "出力先へ届くか WARN が無い"
+rm -rf node_modules/.rev
+mkdir -p "$T/elsewhere"; ln -s "$T/elsewhere" linkout
+run --out linkout/run
+[ "$(field "$T/elsewhere/run" code-review out_leak)" = "0" ] && ok "ignore 済みのシンボリックリンク経由の --out でも出力先へ届かない" || ng "リンク経由で出力先へ届く: $(field "$T/elsewhere/run" code-review out_leak)"
+rm -f linkout; rm -rf "$T/elsewhere"
 
 echo "2-3. 未コミットの変更あり（変更 + 未追跡）"
 echo DIRTY > a.txt; echo junk > untracked.txt
@@ -107,13 +125,19 @@ git worktree list | grep -q "ai-review-wt.999999.test$$" && ng "作成者のい�
 git worktree list | grep -q "ai-review-wt.$$.test$$" && ok "作成者が生きている worktree には触れない" || ng "生きている worktree まで消した"
 grep -q '^reclaimed:' "$T/o9/status.txt" && ok "回収を status.txt に記録" || ng "記録なし"
 git worktree remove --force "$live" 2>/dev/null; rm -rf "$dead" "$live"; git worktree prune
+cur="$tmp_root/ai-review-wt.999998.cur$$"; git worktree add -q --detach "$cur" HEAD
+( cd "$cur" && AI_REVIEW_DRY_RUN=1 bash "$RR" --out "$T/o9c" >/dev/null 2>&1 )
+[ -d "$cur" ] && git worktree list | grep -q "ai-review-wt.999998.cur$$" && ok "起動した場所の worktree は、作成者がいなくても回収しない" || ng "使用中の worktree を消した"
+git worktree remove --force "$cur" 2>/dev/null; rm -rf "$cur"; git worktree prune
 
 echo "10. ignore の規則が HEAD と作業ツリーで違う項目（未コミットの .gitignore 変更）"
-echo 'extra/' >> .gitignore; mkdir -p extra && echo e > extra/f.txt
+printf 'extra/\n日本語/\nwith space/\n' >> .gitignore
+mkdir -p extra "日本語" "with space"; echo e > extra/f.txt; echo j > "日本語/f.txt"; echo s > "with space/f.txt"
 run --out "$T/o10"
-[ "$(field "$T/o10" code-review uncommitted)" = "0" ] && ok "HEAD では ignore されない項目は持ち込まない（0 件）" || ng "未コミット=$(field "$T/o10" code-review uncommitted)"
-grep -q '^WARN: ignore されずに見えた' "$T/o10/status.txt" && ok "外したことを WARN で残す" || ng "WARN なし"
-git checkout -q -- .gitignore; rm -rf extra
+[ "$(field "$T/o10" code-review uncommitted)" = "0" ] && ok "HEAD では ignore されない項目は持ち込まない（日本語・空白の名前も含め 0 件）" || ng "未コミット=$(field "$T/o10" code-review uncommitted)"
+grep -q '^WARN: ignore されずに見えた項目を隔離環境から外した（3 件' "$T/o10/status.txt" && ok "外した件数を WARN で残す（3 件）" || ng "WARN の件数が違う: $(grep '^WARN: ignore' "$T/o10/status.txt")"
+grep -q '^WARN: 外しきれず' "$T/o10/status.txt" && ng "外しきれなかった" || ok "外しきれない項目は無い"
+git checkout -q -- .gitignore; rm -rf extra "日本語" "with space"
 
 echo "11. 初期化済みの submodule があれば隔離しない（空の submodule で検証させない）"
 G init -q --bare -b main "$T/sub.git"; G clone -q "$T/sub.git" "$T/subsrc" 2>/dev/null
