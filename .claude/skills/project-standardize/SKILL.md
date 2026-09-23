@@ -88,13 +88,12 @@ grep -RIn "{{" AGENTS.md CLAUDE.md README.md notes/ 2>/dev/null || echo "残り�
 ## 3. GitHub 初期セットアップ
 
 ```bash
-# origin/HEAD（/security-review が必要とする）
+# origin/HEAD（/ai-review と昇格 /security-review が必要とする）
 git remote set-head origin -a
-
-# type:* ラベル（状態は Project カラムで持つ。status:* ラベルは作らない）
-for t in bug feature content i18n legal billing data mobile ops; do \
-  gh label create "type:$t" --color ededed 2>/dev/null || true; done
 ```
+
+`type:*` ラベル 7 種・標準 CI・dependabot・骨格 AGENTS.md / CLAUDE.md / Issue テンプレは ci-standard の sweeper が翌朝までに自動で置く（手で作らない。状態は Project カラムで持ち、`status:*` ラベルは作らない）。
+骨格 AGENTS.md の固有値を埋めたら、先頭の「sweeper が配布した骨格」の印の行を消す（消すと sweeper は以後触らない）。
 
 GitHub Project（板）を作成し、Status を
 Inbox / Ready / Waiting / Doing / PR / Prod Check / Done にする。
