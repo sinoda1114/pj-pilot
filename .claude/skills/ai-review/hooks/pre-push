@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# /ai-review v2 pre-push ゲート（ブロック型）
+# /ai-review v3 pre-push ゲート（ブロック型）
 #
 # .review-reports/latest.json を検査し、以下なら push を拒否する:
 #   1. latest.json が無い、または head_sha が今の HEAD と一致しない（レビュー未実施／古い）
 #   2. verdict が block
-#   3. escalate=true かつ escalation_done=false かつ skipped_by_user=false（昇格未実施）
-#   4. mode が branch でない（--local の記録は未コミット差分しか見ていないため push の根拠にしない）
+#   3. verdict が must-address で、must_address の項目に未処理のものがある。処理済みとみなすのは次のどちらか:
+#        - fixed で、HEAD が進んだ新しいレビューに引き継がれたもの（re_reviewed_sha = レビュー済み SHA）
+#        - accepted で、別のサブエージェントの検証が upheld、かつ（高リスクでない、または人が承認）
+#   4. escalate=true かつ escalation_done=false かつ skipped_by_user=false（昇格未実施）
+#   5. mode が branch でない（--local の記録は未コミット差分しか見ていないため push の根拠にしない）
+#   6. verdict が pass / must-address / block 以外（v2 の記録 fix を含む。再実行を求める）
+#
+# 項目の検査に python3 を使う（must-address のときだけ）。見つからなければ拒否する（黙って通さない）。
 #
 # 緊急回避: AI_REVIEW_BYPASS=1 git push  （理由をコミットログか PR に残すこと）
 # リポジトリ除外: git config ai-review.skip true（設定ミラー等、コードでないリポジトリ）
@@ -42,11 +48,18 @@ fi
 # jq 非依存の素朴な抽出
 get() { sed -n "s/.*\"$1\": *\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p" "$f" | head -1; }
 head_sha="$(get head_sha)"; verdict="$(get verdict)"; mode="$(get mode)"
+# ダミー実行（AI_REVIEW_DRY_RUN=1）の記録は、実モデルのレビューを経ていない（テストだけ AI_REVIEW_ALLOW_DRY=1 で通す）
+if grep -q '"dry_run": *true' "$f" && [ "${AI_REVIEW_ALLOW_DRY:-0}" = "1" ]; then
+  echo "[ai-review] 注意: AI_REVIEW_ALLOW_DRY=1 のため、ダミー実行の記録を通します（テスト用）" >&2
+elif grep -q '"dry_run": *true' "$f"; then
+  echo "[ai-review] 拒否: latest.json はダミー実行（AI_REVIEW_DRY_RUN=1）の結果です。/ai-review を実モデルで回してください" >&2
+  exit 1
+fi
 escalate="$(get escalate)"; done_flag="$(get escalation_done)"; skipped="$(get skipped_by_user)"
 # 記録の妥当性を先に検査する。record-gate.sh が書き込み途中で中断すると
 # verdict が空のまま残り得るが、「block でなければ通す」だと素通りする。
 case "$verdict" in
-  pass|fix) ;;
+  pass|must-address) ;;
   block)
     echo "[ai-review] 拒否: 直近のレビュー結論が block です。修正して /ai-review を再実行してください" >&2
     exit 1 ;;
@@ -82,8 +95,59 @@ for b in "$escalate" "$done_flag" "$skipped"; do
 done
 
 if [ "$escalate" = "true" ] && [ "$done_flag" != "true" ] && [ "$skipped" != "true" ]; then
-  echo "[ai-review] 拒否: 昇格条件に該当しましたが /security-review が未実施です。/ai-review を再実行するか、明示的に昇格スキップを指示してください" >&2
+  echo "[ai-review] 拒否: 昇格条件に該当しましたが深掘り（own-security）が未実施です。/ai-review を再実行するか、明示的に昇格スキップを指示してください" >&2
   exit 1
+fi
+
+# MUST-ADDRESS の項目が全部処理済みかを確かめる（基準は gate.py の item_ok と同じ）
+if [ "$verdict" = "must-address" ]; then
+  py="$(command -v python3 || true)"
+  [ -n "$py" ] || { [ -x /usr/bin/python3 ] && py=/usr/bin/python3; }
+  if [ -z "$py" ]; then
+    echo "[ai-review] 拒否: verdict=must-address の項目を検査する python3 が見つかりません" >&2
+    exit 1
+  fi
+  # -I（isolated）で cwd を sys.path に入れず PYTHON* も無視し、cwd もリポジトリの外にする。
+  # リポジトリ直下の json.py などを import させない（フックは全リポジトリで動く。2026-09-23 に実測）
+  left="$(cd / && "$py" -I - "$repo_root/$f" "$head_sha" <<'PY'
+import json, sys
+try:
+    rec = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception as e:
+    print("-\t-\t-\tlatest.json を JSON として読めない: %s" % e); sys.exit(1)
+head = sys.argv[2]
+items = rec.get("must_address")
+if not isinstance(items, list) or not items:
+    print("-\t-\t-\tverdict=must-address なのに項目が無い（記録が壊れている）"); sys.exit(1)
+bad = 0
+for it in items:
+    st = it.get("status")
+    if st == "fixed":
+        ok = bool(it.get("re_reviewed_sha")) and it.get("re_reviewed_sha") == head
+        why = "fixed と記録済み。commit して /ai-review を再実行する"
+    elif st == "accepted":
+        if it.get("verifier") != "upheld":
+            ok, why = False, "直さない理由の検証が済んでいない（verifier=%s）" % it.get("verifier")
+        elif it.get("high_risk") is True and it.get("approved_by") != "human":
+            ok, why = False, "高リスクのため人の承認が要る"
+        else:
+            ok, why = True, ""
+    else:
+        ok, why = False, "未処理（status=%s）" % st
+    if not ok:
+        bad += 1
+        line = "%s\t%s\t%s:%s\t%s" % (it.get("id"), it.get("tier"), it.get("file"), it.get("line"), why)
+        # 制御文字を ? にして出す（ファイル名に仕込んだエスケープシーケンスを端末で効かせない）
+        print("".join("?" if (ord(c) < 32 and c != "\t") or 127 <= ord(c) < 160 else c for c in line))
+sys.exit(1 if bad else 0)
+PY
+)"; rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "[ai-review] 拒否: MUST-ADDRESS の未処理の項目があります（直すか、理由を記録して検証を通す。高リスクは人の承認も要る）" >&2
+    printf '%s\n' "$left" | sed 's/^/[ai-review]   /' >&2
+    echo "[ai-review]   手順: ~/.claude/skills/ai-review/scripts/resolve-item.sh --list" >&2
+    exit 1
+  fi
 fi
 
 echo "[ai-review] ゲート通過 (verdict=$verdict escalate=$escalate done=$done_flag skipped=$skipped)" >&2
