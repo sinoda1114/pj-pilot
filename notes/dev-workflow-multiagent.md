@@ -31,15 +31,18 @@ git worktree remove ../pj-pilot-<topic>   # マージ後に撤去
 
 - **誰も main に直接 commit / push しない**。例外なし。
 - 機能は feature ブランチ → **PR → マージ**。
-- push 前に **`/ai-review`（1 段ゲート・v2）** を通す。対象は `origin/HEAD` からのコミット済み差分全体。
-  内部で組み込み `/code-review` と Codex 純正 `codex exec review` を並列・独立に実行して突合し、
-  高リスク差分（auth / payment / schema 等のパス、危険 API の追加行、規模、セキュリティ指摘あり・不一致）は
-  `/security-review` を**機械判定で自動起動**する。人が `/security-review` を別途叩く運用は廃止（2026-09-12）。
-  結果は `.review-reports/latest.json` に記録され、pre-push フックが検査する（未レビュー・block・昇格未実施は push 拒否）。
+- push 前に **`/ai-review`（1 段ゲート・v3）** を通す。対象は `origin/HEAD` からのコミット済み差分全体。
+  内部で自前観点 own-review と Codex 純正 `codex exec review` を並列・独立に実行して突合し、
+  結論は `BLOCK` / `MUST-ADDRESS` / `PASS` の 3 段。高リスク差分（auth / payment / schema 等のパス、危険 API の追加行、
+  規模、セキュリティ指摘あり）はセキュリティの深掘り own-security を**機械判定で自動起動**する。人が別途叩く運用はしない。
+  `MUST-ADDRESS` は 1 件ずつ「直す」か「理由を記録して別サブエージェントが検証」して片づける。
+  高リスク項目の人の承認は、ユーザー自身が端末で `resolve-item.sh --approve-human` を実行する（AI は代行しない）。
+  結果は `.review-reports/latest.json` に記録され、pre-push フックが検査する
+  （未レビュー・`block`・`must-address` の未処理・昇格未実施・v2 の記録（`fix`）は push 拒否）。
 - **クラウドセッションでは `/ai-review` が使えない**（Codex CLI 不在）。クラウドは `/code-review` 単独で確認し、
   正式なゲートはローカルで `/ai-review` を通してから push する。
   worktree 運用では skill を **worktree 側で実行**する（cwd の現在ブランチを見るため）。
-- 設計根拠: `.claude/skills/ai-review/DESIGN-v2.md`。
+- 仕様: `.claude/skills/ai-review/SKILL.md`。設計根拠: `.claude/skills/ai-review/DESIGN-v3.md`。
 - コンフリクトは feature 側で `git merge origin/main`（or rebase）して解消してから PR を出す。
 
 ## 3. デプロイは「git 駆動・単一オーナー」（手動 CLI 禁止）
