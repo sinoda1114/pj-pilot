@@ -36,6 +36,19 @@ py="$(command -v python3 || true)"
 [ -n "$py" ] || { echo "python3 が見つかりません" >&2; exit 1; }
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "not a git repository" >&2; exit 1; }
 cd "$(git rev-parse --show-toplevel)" || exit 1
+# レビュー対象のコミットに .review-reports が入っていると（シンボリックリンクや追跡済みのファイル）、
+# 出力がリポジトリの外や意図しない場所に書かれる。レビュー対象を信頼しない前提なので、見つけたら止める
+guard_reports_dir() {
+  local top="$1"
+  # どの階層でも、大文字小文字を区別せずに見る（macOS の既定のファイルシステムは大文字小文字を区別しない）。
+  # grep -q は途中で読むのをやめ、pipefail の下で上流が SIGPIPE で失敗扱いになるので、-c で最後まで読む
+  if [ -L "$top/.review-reports" ] || [ "$(git -C "$top" ls-files -z 2>/dev/null | tr '\0' '\n' | grep -ciE '(^|/)\.review-reports(/|$)')" != "0" ]; then
+    echo "リポジトリの .review-reports がシンボリックリンクか、git で追跡されています（サブディレクトリ・大文字小文字違いを含む）。レビューの出力を書けません。" >&2
+    echo "レビュー対象のコミットに .review-reports が含まれていないか確かめてください。" >&2
+    exit 1
+  fi
+}
+guard_reports_dir "$(pwd)"
 f=".review-reports/latest.json"
 [ -f "$f" ] || { echo "$f がありません。先に /ai-review を実行してください" >&2; exit 1; }
 

@@ -37,7 +37,7 @@ push 前の**唯一のゲート**。レビュー本体は書かない。同梱�
 | `scripts/test-gate.sh` / `scripts/test-isolation.sh` | 回帰テスト（ダミー実行とフィクスチャのみ。実モデルを呼ばない） |
 | `scripts/probe-permissions.sh` | 実機の確認（実モデルを少し呼ぶ）。レビュアーの許可・拒否・設定の隔離が CLI で効いているかを、印のファイルの有無で確かめる。CLI の更新時と起動引数の変更時に回す |
 
-`$SKILL` = `~/.claude/skills/ai-review` として以下に記す。
+`$SKILL` = このスキルのディレクトリ（スキルを読み込んだときに示される Base directory。既定の導入先は `~/.claude/skills/ai-review`）として以下に記す。ユーザーにコマンドを示すときは、`$SKILL` を実際のパスに置き換える。
 
 ### 1.1 レビュアーとモデル（固定）
 
@@ -62,6 +62,8 @@ Claude 側の道具は `Read,Grep,Glob,読み取り系の git サブコマンド
 
 既定モードでは、`run-reviews.sh` が常に HEAD の clean な worktree を一時的に作り、レビュアーはそこで動く（`status.txt` に `isolated:` の行が残る）。未コミットの変更も、レビュー中に別作業が書き換えた内容も、レビュー対象に混ざらない。`.env` や `node_modules` など ignore 済みの項目は本体へのリンクで用意される。初期化済みの submodule があるリポジトリだけは隔離せず、`status.txt` に `WARN` を残して元の作業ツリーで動く。理由と経緯は `DESIGN-v2.md` §12。
 
+`status.txt` に `WARN: このリポジトリには core.hooksPath=…` があれば、結論に「このリポジトリではリポジトリ単位の core.hooksPath のため pre-push ゲートが動かない（記録しても push は止まらない）」と書き、設定を消すか、そこに pre-push を置くよう案内する。
+
 未コミットの変更はレビューされず、push にも含まれない。開始時の件数が `status.txt` の `uncommitted=N` に残るので、N > 0 なら結論に「未コミット N 件はレビュー対象外で、この push にも含まれない」と書く。
 
 `--local` のとき、自前観点は自分で `git diff --cached`・`git diff`・未追跡ファイルを読み、Codex は `--uncommitted` で全部を見る。v2 のように index へ `git add -A` する必要はない（**index に触れない**）。
@@ -77,12 +79,12 @@ command -v python3 >/dev/null || echo "python3 が無い"
 `origin/HEAD` 未設定なら `git remote set-head origin -a` を案内して中断する。リモートが無いローカル単独リポジトリでは `--local` のみ対応と伝える。python3 が無ければ中断する（記録と判定表の検査に使う）。
 
 ### 3.2 差分取得・昇格判定（機械）
+リポジトリの直下に移ってから始める。run ディレクトリと `escalation.json` は `run-reviews.sh` が作る（`.review-reports` がシンボリックリンクか git で追跡されていれば、書かずに止まる。自分で `mkdir` や `>` で先に書かない）。
 ```bash
-ts="$(date +%Y%m%d-%H%M%S)"; run=".review-reports/run-$ts"; mkdir -p "$run"
-$SKILL/scripts/escalation-check.sh > "$run/escalation.json"          # 既定
-$SKILL/scripts/escalation-check.sh --local > "$run/escalation.json"  # --local のとき
-cat "$run/escalation.json"
+cd "$(git rev-parse --show-toplevel)"
+ts="$(date +%Y%m%d-%H%M%S)"; run=".review-reports/run-$ts"
 ```
+§3.3 の実行後に `cat "$run/escalation.json"` で判定を読む。
 - `error` があれば内容を伝えて中断。
 - `secret_paths` が空でなければ、`run-reviews.sh` が自分で Codex を起動しない（外部モデルに秘密情報を送らない。`UNAVAILABLE codex-review` として未取得の項目になる）。`--no-codex` を付けても同じく未取得の項目になる。ファイル名だけレポートに載せる。
 - `escalate` と `reasons` を保持する（§3.6 で使う）。
@@ -151,7 +153,7 @@ python3 $SKILL/scripts/gate.py summary --run "$run" > "$run/summary.json"   # �
 - ユーザーが**明示的に**「昇格スキップ」と言った場合のみ起動しない。理由を聞き、`--skipped-by-user true --reason "<理由>"` で記録する。
 
 ### 3.7 レポート生成
-`$run/report.md` と `$run/report.html` を Write ツールで書く（§4）。`.review-reports/latest.md` / `latest.html` にもコピーする。
+`$run/report.md` と `$run/report.html` を Write ツールで書く（§4）。`.review-reports/latest.md` / `latest.html` へは、一時ファイルにコピーしてから `mv` で置き換える（`cp` で直接上書きしない。リンクをたどって別の場所を書き換えないため）。
 
 ### 3.8 ゲート記録
 ```bash
@@ -182,7 +184,7 @@ $SKILL/scripts/record-gate.sh --verdict <pass|must-address|block> --items "$run/
    `$SKILL/scripts/resolve-item.sh --id <ID> --verifier upheld|rejected --note "<サブエージェントの結論の要約>"`
    rejected なら項目は open に戻る。直すか、別の理由で B をやり直す（同じ理由の出し直しはしない）。
 4. `high_risk=true` の項目は、upheld の後に**ユーザーの承認**が要る。項目・理由・検証の結論をチャットで示し、承認するならユーザー自身の端末で次を実行してもらう（確認のため ID を打ち込む。Claude の Bash には端末が無いので、AI は記録できない）。**自分で承認しない。疑似端末を作って代わりに打ち込まない。1 件ごとに頼む**。
-   `~/.claude/skills/ai-review/scripts/resolve-item.sh --id <ID> --approve-human --note "<承認の理由>"`
+   `$SKILL/scripts/resolve-item.sh --id <ID> --approve-human --note "<承認の理由>"`（`$SKILL` は実際のパスに置き換えて示す）
 
 - 理由・検証・承認は、レビューした HEAD（`latest.json` の `head_sha`）に対してだけ記録できる。HEAD を動かしたら再実行から。
 - **BLOCK は直すしかない**（verdict=block は pre-push が必ず止める）。誤検知だと考える場合は、根拠を添えてユーザーに判断を仰ぐ。ユーザーが明示した場合だけ `AI_REVIEW_BYPASS=1` を案内する。
@@ -276,11 +278,12 @@ pre{background:var(--code-bg);color:var(--code-fg);padding:14px 16px;border-radi
 フックの拒否条件: `head_sha ≠ push 対象 SHA` / `verdict = block` / `verdict = must-address` で処理済みでない項目がある / `mode ≠ branch` / `escalate かつ 未実施かつ 未スキップ` / verdict が不正（v2 の `fix` を含む）。処理済みとは「`fixed` で再レビュー済み（`re_reviewed_sha` = レビュー済み SHA）」または「`accepted` かつ `verifier = upheld` かつ（高リスクでない、または `approved_by = human`）」。緊急回避は `AI_REVIEW_BYPASS=1 git push`、コードでないリポジトリは `git config ai-review.skip true`。
 
 ## 6. pre-push フック導入（初回のみ案内）
+配布リポジトリの `install.sh` で入れるよう案内する（前提の確認、スキルの導入、フックへのスキルの場所の埋め込み、既存のフックとの競合の確認を行う）。スクリプトを使えないときの手作業:
 ```bash
-cp ~/.claude/skills/ai-review/hooks/pre-push ~/.git-hooks/pre-push && chmod +x ~/.git-hooks/pre-push
+sed "s|__AI_REVIEW_SKILL_DIR__|$SKILL|" "$SKILL/hooks/pre-push" > ~/.git-hooks/pre-push && chmod +x ~/.git-hooks/pre-push
 git config --global core.hooksPath ~/.git-hooks
 ```
-既存の `~/.git-hooks/pre-push` がある場合は上書き前に内容を見せ、ユーザーの了解を得る。v2 のフックのままだと `must-address` を不正な verdict として拒むので、v3 に入れ替えるよう案内する。
+既存の `~/.git-hooks/pre-push` がある場合は上書き前に内容を見せ、ユーザーの了解を得る。このフックは、ゲートを通した後に各リポジトリの `.git/hooks/pre-push` を呼び継ぐ。v2 のフックのままだと `must-address` を不正な verdict として拒むので、v3 に入れ替えるよう案内する。
 
 ## 7. エラーハンドリング
 

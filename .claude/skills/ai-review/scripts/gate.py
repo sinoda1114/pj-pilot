@@ -22,6 +22,7 @@
   レビュー結果が 1 つも無ければ block。
 """
 import argparse
+import shlex
 import datetime
 import json
 import os
@@ -709,8 +710,9 @@ def cmd_resolve(a):
             tty_in = open("/dev/tty", "r", encoding="utf-8")
             tty_out = open("/dev/tty", "w", encoding="utf-8")
         except OSError:
+            ri = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resolve-item.sh")
             die("人の承認は、ユーザー自身が端末で実行してください（端末がありません）:\n"
-                "  ~/.claude/skills/ai-review/scripts/resolve-item.sh --id %s --approve-human --note \"<承認の理由>\"" % a.id)
+                "  %s --id %s --approve-human --note \"<承認の理由>\"" % (shlex.quote(ri), shlex.quote(a.id)))
         with tty_in, tty_out:
             tty_out.write("[ai-review] 項目 %s を人として承認します。確認のため ID を入力してください: " % safe(a.id))
             tty_out.flush()

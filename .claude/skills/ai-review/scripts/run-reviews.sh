@@ -21,7 +21,7 @@
 #   Opus 5.5 は CLI 2.1.280 以上が必要。既定 effort が medium なので --effort high を明示し続けること。
 #
 # 自前観点のプロンプトは、スラッシュコマンドとして入れずに本文を claude -p に直接渡す。
-# frontmatter を外し、「対象: $ARGUMENTS（…）」の行を具体的な対象に置き換える（実際に渡した本文は
+# frontmatter を外し、「対象: ${ARGUMENTS}（…）」の行を具体的な対象に置き換える（実際に渡した本文は
 # <名前>.prompt.md に残す）。道具は読み取りと git だけに絞り、--permission-mode dontAsk で
 # それ以外を黙って拒否させる（ユーザー設定の auto モードで書き込みやネットワークが通らないように）。
 #
@@ -80,6 +80,19 @@ py="$(command -v python3 || true)"
 for f in own-review.md own-security.md; do
   [ -f "$prompt_dir/$f" ] || { echo "プロンプトが見つからない: $prompt_dir/$f" >&2; exit 1; }
 done
+# レビュー対象のコミットに .review-reports が入っていると（シンボリックリンクや追跡済みのファイル）、
+# 出力がリポジトリの外や意図しない場所に書かれる。レビュー対象を信頼しない前提なので、見つけたら止める
+guard_reports_dir() {
+  local top="$1"
+  # どの階層でも、大文字小文字を区別せずに見る（macOS の既定のファイルシステムは大文字小文字を区別しない）。
+  # grep -q は途中で読むのをやめ、pipefail の下で上流が SIGPIPE で失敗扱いになるので、-c で最後まで読む
+  if [ -L "$top/.review-reports" ] || [ "$(git -C "$top" ls-files -z 2>/dev/null | tr '\0' '\n' | grep -ciE '(^|/)\.review-reports(/|$)')" != "0" ]; then
+    echo "リポジトリの .review-reports がシンボリックリンクか、git で追跡されています（サブディレクトリ・大文字小文字違いを含む）。レビューの出力を書けません。" >&2
+    echo "レビュー対象のコミットに .review-reports が含まれていないか確かめてください。" >&2
+    exit 1
+  fi
+}
+guard_reports_dir "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 mkdir -p "$out" 2>/dev/null || { echo "cannot create --out: $out" >&2; exit 1; }
 # レビュアーは隔離用の worktree で動くので、出力先は絶対パスで固定する。
 # 解決に失敗して空になると、以降の出力が / 直下に向かうので止める。
@@ -134,7 +147,7 @@ resolve_base() {
 # 二重レビューが黙って 1 本に減る（2026-09-23 に ~/.claude で実測。フック 1 ファイルの
 # コミットに対し、Codex の指摘 3 件がすべて別作業の未コミット SKILL.md だった）。
 # 開始時に clean でも、レビューの数分〜15 分の間に別作業が書き換えれば同じことが起きるので、
-# 常に HEAD の clean な worktree を作ってレビュアーをそこで動かす。出力は $out（元の
+# 常に HEAD の clean な worktree を作ってレビュアーをそこで動かす。出力は ${out}（元の
 # リポジトリ、絶対パス）に書くので、record-gate.sh と pre-push フックの流れは変わらない。
 # --local は未コミットの変更を見るのが目的なので隔離しない。詳細は DESIGN-v2.md §12。
 run_cwd="$PWD"; wt=""; retry_pid=""; reviewed_sha=""; sha_file=""; base_file=""
@@ -285,6 +298,11 @@ elif [ -n "$base" ]; then
   git -C "$repo_top" diff --numstat --no-renames --diff-filter=d -z "$base...$reviewed_sha" 2>/dev/null | list_numstat >> "$changed"
 fi
 echo "changed_files=$(wc -l < "$changed" | tr -d ' ')" >> "$status"
+# リポジトリ単位の core.hooksPath はグローバルより優先されるので、グローバルに入れた pre-push ゲートが動かない
+local_hp="$(git -C "$repo_top" config --local --get core.hooksPath 2>/dev/null || true)"
+if [ -n "$local_hp" ]; then
+  echo "WARN: このリポジトリには core.hooksPath=${local_hp} が設定されていて、グローバルの pre-push ゲートが動かない（レビューの結果を記録しても push は止まらない）。消すか、そこに pre-push を置く" >> "$status"
+fi
 # 昇格判定（escalation.json）を作る。record は branch の記録にこれを必須にし、下限として使う。
 # 通常の実行（--deep を含む）は毎回作り直す（--out を使い回したとき、前の差分の判定を使わない）。
 # --security は同じ run に足すものなので、あればそのまま使う。比較元はレビューと同じものを渡す。
@@ -320,7 +338,7 @@ print(len(sp) if isinstance(sp, list) else "?")' "$out/escalation.json" 2>/dev/n
 fi
 
 # ---- 自前観点のプロンプトを組み立てる ----
-# frontmatter（先頭の --- から次の --- まで）を外し、「対象: $ARGUMENTS」の行を対象に置き換える。
+# frontmatter（先頭の --- から次の --- まで）を外し、「対象: ${ARGUMENTS}」の行を対象に置き換える。
 # 置き換える行が見つからなければ、プロンプトの形が変わったとみなして止める（黙って $ARGUMENTS のまま渡さない）。
 if [ "$mode" = "local" ]; then
   target_line="対象: 未コミットの変更（ステージ済み・未ステージ・未追跡）"
@@ -336,8 +354,8 @@ render_prompt() {
     END { if (!hit) exit 3 }
   ' "$1"
 }
-prompt_review="$(render_prompt "$prompt_dir/own-review.md")" || { echo "own-review.md に「対象: \$ARGUMENTS」の行が無い" >> "$status"; cat "$status"; exit 1; }
-prompt_security="$(render_prompt "$prompt_dir/own-security.md")" || { echo "own-security.md に「対象: \$ARGUMENTS」の行が無い" >> "$status"; cat "$status"; exit 1; }
+prompt_review="$(render_prompt "$prompt_dir/own-review.md")" || { echo "own-review.md に「対象: \${ARGUMENTS}」の行が無い" >> "$status"; cat "$status"; exit 1; }
+prompt_security="$(render_prompt "$prompt_dir/own-security.md")" || { echo "own-security.md に「対象: \${ARGUMENTS}」の行が無い" >> "$status"; cat "$status"; exit 1; }
 
 # ---- 起動 ----
 # ダミー出力（AI_REVIEW_DRY_RUN=1）。レビュアーが終わる時点の、実際に動いている場所の状態を記録する（隔離のテスト用）。
@@ -462,12 +480,12 @@ start_codex() {
   done
   if [ "$mode" = "local" ]; then
     run_bg "$name" "$codex_bin" exec review --uncommitted --skip-git-repo-check \
-        -m "$model" -c model_reasoning_effort="\"$CODEX_EFFORT\"" -c sandbox_mode="\"read-only\"" -c notify=[] -c mcp_servers={} \
+        -m "$model" -c model_reasoning_effort="\"$CODEX_EFFORT\"" -c sandbox_mode="\"read-only\"" -c notify=[] -c mcp_servers={} -c project_doc_max_bytes=0 \
         -o "$out/$name.last"
   else
     [ -n "$base" ] || { echo "base ref not found for codex --base" >> "$status"; }
     run_bg "$name" "$codex_bin" exec review --base "$base" --skip-git-repo-check \
-        -m "$model" -c model_reasoning_effort="\"$CODEX_EFFORT\"" -c sandbox_mode="\"read-only\"" -c notify=[] -c mcp_servers={} \
+        -m "$model" -c model_reasoning_effort="\"$CODEX_EFFORT\"" -c sandbox_mode="\"read-only\"" -c notify=[] -c mcp_servers={} -c project_doc_max_bytes=0 \
         -o "$out/$name.last"
   fi
 }
