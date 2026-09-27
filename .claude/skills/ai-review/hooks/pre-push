@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# ai-review-managed-hook
 # /ai-review v3 pre-push ゲート（ブロック型）
 #
 # .review-reports/latest.json を検査し、以下なら push を拒否する:
@@ -18,10 +19,30 @@
 # 導入: ~/.git-hooks/pre-push にコピー（core.hooksPath=~/.git-hooks 前提）。chmod +x を忘れない。
 set -uo pipefail
 
-[ "${AI_REVIEW_BYPASS:-0}" = "1" ] && { echo "[ai-review] BYPASS 指定。ゲート検査を飛ばします" >&2; exit 0; }
+# git が渡す入力（push する ref の一覧）を先に読み取っておく。リポジトリ自身の pre-push にも同じ入力を渡すため
+input="$(cat)"
+hook_args=("$@")
+# ゲートを通したら、リポジトリ自身の .git/hooks/pre-push を呼び継ぐ（グローバルの core.hooksPath にすると、
+# git はリポジトリの .git/hooks を使わなくなるため。ここで呼び継がないと、各リポジトリの検査が黙って止まる）
+pass() {
+  local h; h="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-push"
+  if [ -x "$h" ] && ! [ "$h" -ef "$0" ]; then
+    # パイプではなく一時ファイルで渡す（呼び継いだフックが入力を読まずに終わると、pipefail で失敗と誤読するため）
+    local in; in="$(mktemp "${TMPDIR:-/tmp}/ai-review-prepush.XXXXXX")" || exit 1
+    printf '%s\n' "$input" > "$in"
+    "$h" ${hook_args[@]+"${hook_args[@]}"} < "$in"; local rc=$?
+    rm -f "$in"; exit $rc
+  fi
+  exit 0
+}
+[ "${AI_REVIEW_BYPASS:-0}" = "1" ] && { echo "[ai-review] BYPASS 指定。ゲート検査を飛ばします" >&2; pass; }
 
 # リポジトリ単位の除外（設定ミラー等、コードレビュー対象でないリポジトリ）: git config ai-review.skip true
-[ "$(git config --get ai-review.skip 2>/dev/null)" = "true" ] && { echo "[ai-review] ai-review.skip=true のためゲート検査を飛ばします" >&2; exit 0; }
+[ "$(git config --get ai-review.skip 2>/dev/null)" = "true" ] && { echo "[ai-review] ai-review.skip=true のためゲート検査を飛ばします" >&2; pass; }
+
+# スキルの場所。install.sh が導入するときに実際のパスを埋め込む（埋め込まれていなければ既定の導入先）
+skill_dir="__AI_REVIEW_SKILL_DIR__"
+case "$skill_dir" in __*) skill_dir="$HOME/.claude/skills/ai-review" ;; esac
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 cd "$repo_root" || exit 0
@@ -36,9 +57,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$zero" ] && continue
   push_shas="$push_shas $local_sha"
   push_refs="$push_refs $local_ref"
-done
-[ -z "$(printf '%s' "$push_shas" | tr -d '[:space:]')" ] && exit 0
+done <<< "$input"
+[ -z "$(printf '%s' "$push_shas" | tr -d '[:space:]')" ] && pass
 
+# レビュー対象のコミットに .review-reports が入っていれば、その記録は信用しない
+if [ -L .review-reports ] || [ "$(git ls-files -z 2>/dev/null | tr '\0' '\n' | grep -ciE '(^|/)\.review-reports(/|$)')" != "0" ]; then
+  echo "[ai-review] 拒否: .review-reports がシンボリックリンクか、git で追跡されています。記録を信用できません" >&2
+  exit 1
+fi
 f=".review-reports/latest.json"
 if [ ! -f "$f" ]; then
   echo "[ai-review] 拒否: $f がありません。push 前に /ai-review を実行してください" >&2
@@ -145,10 +171,10 @@ PY
   if [ $rc -ne 0 ]; then
     echo "[ai-review] 拒否: MUST-ADDRESS の未処理の項目があります（直すか、理由を記録して検証を通す。高リスクは人の承認も要る）" >&2
     printf '%s\n' "$left" | sed 's/^/[ai-review]   /' >&2
-    echo "[ai-review]   手順: ~/.claude/skills/ai-review/scripts/resolve-item.sh --list" >&2
+    echo "[ai-review]   手順: $skill_dir/scripts/resolve-item.sh --list" >&2
     exit 1
   fi
 fi
 
 echo "[ai-review] ゲート通過 (verdict=$verdict escalate=$escalate done=$done_flag skipped=$skipped)" >&2
-exit 0
+pass

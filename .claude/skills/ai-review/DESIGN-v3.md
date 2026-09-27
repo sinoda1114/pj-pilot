@@ -1,8 +1,8 @@
 # /ai-review v3 設計メモ（2026-09-23 確定）
 
-`ai-review-benchmark-v2` の確認用データでの測定を受けて `/ai-review` を刷新した記録。本メモは「なぜこの設計か」の正本。SKILL.md は「どう動くか」のみ書く。v2 の記録は `DESIGN-v2.md`（作業ツリーの隔離 §12 など、v3 でもそのまま有効な決定を含む）。
+別に用意したベンチマーク（OWASP Benchmark から抽出した確認用データと、実際の fix コミットから作ったバグのデータ）での測定を受けて `/ai-review` を刷新した記録。本メモは「なぜこの設計か」の正本。SKILL.md は「どう動くか」のみ書く。v2 の記録は `DESIGN-v2.md`（作業ツリーの隔離 §12 など、v3 でもそのまま有効な決定を含む）。
 
-計画と測定の経緯: `~/dev/ai-review-benchmark-v2/docs/ai-review-deep-plan.md`（進捗記録以降）、観点の設計: `docs/ai-review-own-guide-design.md`。
+計画と測定の経緯: このリポジトリの `docs/ai-review-deep-plan.md`（進捗記録以降）、観点の設計: `docs/ai-review-own-guide-design.md`。
 
 ---
 

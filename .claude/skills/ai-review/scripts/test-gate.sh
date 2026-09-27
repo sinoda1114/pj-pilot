@@ -72,6 +72,7 @@ grep -q -- "--disallowedTools .*Bash(git \*--output\*)" .review-reports/r1/own-r
 grep -q -- '-m gpt-6-sol -c model_reasoning_effort="high"' .review-reports/r1/codex-review.md && ok "codex-review は gpt-6-sol / high の純正 review（独自の指示なし）" || ng "codex のモデル"
 grep -q -- 'exec review --base origin/main --skip-git-repo-check' .review-reports/r1/codex-review.md && ok "Codex に比較元を渡す" || ng "codex の比較元"
 grep -q -- '-c notify=\[\] -c mcp_servers={}' .review-reports/r1/codex-review.md && ok "Codex のプロジェクト設定（notify・MCP）を打ち消す" || ng "codex の設定の打ち消し"
+grep -q -- '-c project_doc_max_bytes=0' .review-reports/r1/codex-review.md && ok "Codex にレビュー対象の AGENTS.md を読ませない（指示で指摘を消されないように）" || ng "AGENTS.md を読ませない設定が無い"
 [ -f .review-reports/r1/code-review.md ] && ng "v2 の /code-review を起動した" || ok "ECC の /code-review を使わない"
 grep -q '/code-review\|/security-review' .review-reports/r1/own-review.md && ng "スラッシュコマンドを渡した" || ok "スラッシュコマンドではなく本文を渡す"
 
@@ -378,6 +379,7 @@ bash "$RI" --id H1 --verifier upheld --note "確認した" >/dev/null 2>&1
 hook && ng "高リスクを人の承認なしで通した" || ok "高リスク（accepted + upheld、人の承認なし）→ 拒否"
 grep -q '人の承認' "$T/hook.out" && ok "拒否理由に「人の承認が要る」を出す" || ng "理由: $(cat "$T/hook.out")"
 bash "$RI" --id H1 --approve-human --note "" >/dev/null 2>&1 && ng "発言なしで承認を記録できた" || ok "人の承認には発言の記録が要る"
+notty bash "$RI" --id H1 --approve-human --note "ユーザー: H1 はそのままでよい" >"$T/appr.out" 2>&1; grep -qF "$here/resolve-item.sh" "$T/appr.out" && ok "承認の案内は、スキルの実際の場所のパスを示す（決め打ちしない）" || ng "承認の案内のパス: $(tail -1 "$T/appr.out")"
 notty bash "$RI" --id H1 --approve-human --note "ユーザー: H1 はそのままでよい" >/dev/null 2>&1 && ng "端末なしで人の承認を記録できた" || ok "人の承認は端末で ID を打ち込まないと記録しない（AI の Bash からは書けない）"
 notty python3 "$GP" resolve --latest "$latest" --head "$(git rev-parse HEAD)" --id H1 --action approve --note "OK" >/dev/null 2>&1 && ng "gate.py を直接呼んで端末なしで承認できた" || ok "gate.py を直接呼んでも、端末の確認なしに人の承認は書けない"
 tty_run H9 bash "$RI" --id H1 --approve-human --note "ユーザー: H1 はそのままでよい" >/dev/null 2>&1 && ng "違う ID の入力で承認を記録できた" || ok "端末で打ち込んだ ID が違えば記録しない"
@@ -420,6 +422,48 @@ import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["verdict"]="fix"; json.d
 PY
 hook && ng "v2 の verdict=fix を通した" || ok "v2 の記録（fix）→ 拒否"
 
+echo "11b. レビュー対象の .review-reports のシンボリックリンク"
+mkdir -p "$T/evil"; ln -s "$T/evil" .review-reports.lnk
+mv .review-reports "$T/rr.keep"; mv .review-reports.lnk .review-reports; G add .review-reports; G commit -qm evil-link
+run --out .review-reports/rx1; [ -z "$(ls -A "$T/evil")" ] && ok "追跡されたシンボリックリンクの .review-reports には書かない（run-reviews.sh）" || ng "リンク先に書いた: $(ls "$T/evil")"
+bash "$RG" --verdict pass --escalate false --escalation-done false --no-diff >"$T/rg.out" 2>&1; [ ! -e "$T/evil/latest.json" ] && grep -q 'シンボリックリンク' "$T/rg.out" && ok "record-gate.sh もリンク先に書かず、理由を示して止まる" || ng "record-gate.sh: $(tail -1 "$T/rg.out")"
+bash "$RI" --list >"$T/ri.out" 2>&1; grep -q 'シンボリックリンク' "$T/ri.out" && ok "resolve-item.sh もリンクの .review-reports を拒む" || ng "resolve-item.sh: $(tail -1 "$T/ri.out")"
+G rm -q --cached .review-reports; rm .review-reports; G commit -qm unlink; mv "$T/rr.keep" .review-reports
+echo "11c. .review-reports の確認（サブディレクトリ・大文字小文字違い）"
+mkdir -p "$T/evil2" sub; ln -s "$T/evil2" sub/.review-reports; G add sub/.review-reports; G commit -qm sublink
+( cd sub && AI_REVIEW_DRY_RUN=1 bash "$RR" --out .review-reports/rx2 >/dev/null 2>&1 ); [ -z "$(ls -A "$T/evil2")" ] && ok "サブディレクトリの追跡された .review-reports にも書かない" || ng "サブディレクトリのリンク先に書いた"
+G rm -q --cached sub/.review-reports; rm sub/.review-reports; G commit -qm unsub
+mkdir -p .Review-Reports-x; echo x > .Review-Reports-x/f; G add .Review-Reports-x; G commit -qm notmatch
+run --out .review-reports/rx3; [ -s .review-reports/rx3/status.txt ] && ok "似た名前（.Review-Reports-x）は誤って止めない" || ng "似た名前で止めた"
+G rm -rq .Review-Reports-x; G commit -qm unnotmatch
+mv .review-reports "$T/rr.keep2"; mkdir -p .Review-Reports; echo x > .Review-Reports/latest.md; G add -f .Review-Reports; G commit -qm icase
+run --out "$T/outside-icase"; [ ! -s "$T/outside-icase/status.txt" ] && ok "大文字小文字違いの追跡された .Review-Reports があれば止める" || ng "大文字小文字違いを見逃した"
+printf 'refs/heads/feat %s refs/heads/feat %s\n' "$(git rev-parse HEAD)" 0000000000000000000000000000000000000000 | AI_REVIEW_ALLOW_DRY=1 bash "$HOOK" origin x >"$T/hk.out" 2>&1 && ng "pre-push が追跡された .review-reports の記録を読んだ" || { grep -q '追跡' "$T/hk.out" && ok "pre-push も追跡された .review-reports を拒む" || ng "pre-push の理由: $(tail -1 "$T/hk.out")"; }
+G rm -rq .Review-Reports; G commit -qm unicase; rm -rf .Review-Reports; mv "$T/rr.keep2" .review-reports
+
+echo "11d. リポジトリ自身の pre-push を呼び継ぐ"
+hk="$(git rev-parse --git-common-dir)/hooks/pre-push"
+printf '#!/bin/sh\ncat > "%s/chained.in"\nexit 7\n' "$T" > "$hk"; chmod +x "$hk"
+AI_REVIEW_BYPASS=1 bash "$HOOK" origin x >/dev/null 2>&1 <<EOF
+refs/heads/feat $(git rev-parse HEAD) refs/heads/feat 0000000000000000000000000000000000000000
+EOF
+rc=$?; [ $rc -eq 7 ] && grep -q "refs/heads/feat" "$T/chained.in" && ok "ゲートを通したら .git/hooks/pre-push を同じ入力で呼び継ぎ、その結果を返す" || ng "呼び継ぎ rc=$rc"
+rm -f "$T/chained.in"
+printf 'refs/heads/feat %s refs/heads/feat %s\n' "$(git rev-parse HEAD)" 0000000000000000000000000000000000000000 | bash "$HOOK" origin x >/dev/null 2>&1
+[ ! -e "$T/chained.in" ] && ok "ゲートが拒んだときは呼び継がない" || ng "拒否したのに呼び継いだ"
+rm -f "$hk"
+
+echo "11e. リポジトリ単位の core.hooksPath でゲートが動かないことを知らせる"
+git config --local core.hooksPath .git/hooks
+run --out .review-reports/rhp
+grep -q '^WARN: .*core.hooksPath' .review-reports/rhp/status.txt && ok "リポジトリ単位の core.hooksPath があれば、pre-push ゲートが動かないと WARN を残す" || ng "hooksPath の WARN なし"
+git config --local --unset core.hooksPath
+run --out .review-reports/rhp2
+! grep -q 'core.hooksPath' .review-reports/rhp2/status.txt && ok "設定が無ければ WARN を出さない" || ng "設定が無いのに WARN"
+
+echo "12a. インストール先に依存しない"
+grep -q '__AI_REVIEW_SKILL_DIR__' "$HOOK" && ok "pre-push はスキルの場所を埋め込む場所（__AI_REVIEW_SKILL_DIR__）を持つ" || ng "pre-push にスキルの場所の埋め込み口が無い"
+sd0="$here/.."; grep -rn '~/.claude/skills/ai-review' "$sd0/hooks" "$sd0/scripts/gate.py" "$sd0/scripts/resolve-item.sh" "$sd0/scripts/record-gate.sh" "$sd0/scripts/run-reviews.sh" >/dev/null && ng "スクリプト・フックに ~/.claude/skills/ai-review の決め打ちが残っている" || ok "スクリプト・フックに導入先の決め打ちが無い"
 echo "12. JEV・ECC への依存が残っていない"
 sd="$here/.."
 [ ! -e "$sd/scripts/jev-judge.py" ] && [ ! -e "$sd/scripts/jev-escalation.py" ] && ok "JEV のスクリプトを削除" || ng "JEV のスクリプトが残っている"
