@@ -13,7 +13,7 @@
 #
 # レビュアー（出力ファイル名 = 名前。DESIGN-v3.md §3）:
 #   own-review        prompts/own-review.md   × claude-opus-5-5 / high   （毎回）
-#   codex-review      codex exec review 純正  × gpt-6-sol       / high   （毎回。独自の指示は渡さない）
+#   codex-review      codex exec review 純正  × gpt-6.1-sol     / high   （毎回。独自の指示は渡さない）
 #   own-security      prompts/own-security.md × claude-opus-5-5 / high   （--security と --deep）
 #   own-review-fable  prompts/own-review.md   × claude-fable-5-1 / high  （--deep）
 #   codex-astra       codex exec review 純正  × gpt-6-astra     / high   （--deep）
@@ -37,7 +37,7 @@ set -uo pipefail
 CLAUDE_MODEL="claude-opus-5-5"
 CLAUDE_DEEP_MODEL="claude-fable-5-1"
 CLAUDE_EFFORT="high"
-CODEX_MODEL="gpt-6-sol"
+CODEX_MODEL="gpt-6.1-sol"
 CODEX_DEEP_MODEL="gpt-6-astra"
 CODEX_EFFORT="high"
 # 自前観点に許す道具（読み取り + 読み取り系の git サブコマンドのみ）と、明示的に禁じる道具。

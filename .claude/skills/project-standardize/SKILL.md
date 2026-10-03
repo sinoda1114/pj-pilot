@@ -88,7 +88,7 @@ grep -RIn "{{" AGENTS.md CLAUDE.md README.md notes/ 2>/dev/null || echo "残り�
 ## 3. GitHub 初期セットアップ
 
 ```bash
-# origin/HEAD（/ai-review と昇格 /security-review が必要とする）
+# origin/HEAD（/ai-review が必要とする）
 git remote set-head origin -a
 ```
 

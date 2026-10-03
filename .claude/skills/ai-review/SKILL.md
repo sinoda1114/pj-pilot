@@ -1,6 +1,6 @@
 ---
 name: ai-review
-description: Push 前の唯一の AI レビューゲート。同梱の自前観点（own-review、Opus 5.5）と Codex 純正 review（gpt-6-sol）をブラインドで並列起動し、指摘を和集合で突合して 3 段の結論（BLOCK / MUST-ADDRESS / PASS）を出し、Markdown/HTML レポートを .review-reports/ に保存する。高リスク差分はセキュリティの深掘り（own-security）を自動で追加起動し、--deep で 5 本に増やせる。MUST-ADDRESS は 1 件ずつ「直す」か「理由を記録して別のサブエージェントが検証」して片づける。Use when the user types /ai-review, or asks to "レビューして", "push 前に見て", "ブランチをレビュー", "未コミットをレビュー". Does NOT modify source code.
+description: Push 前の唯一の AI レビューゲート。同梱の自前観点（own-review、Opus 5.5）と Codex 純正 review（gpt-6.1-sol）をブラインドで並列起動し、指摘を和集合で突合して 3 段の結論（BLOCK / MUST-ADDRESS / PASS）を出し、Markdown/HTML レポートを .review-reports/ に保存する。高リスク差分はセキュリティの深掘り（own-security）を自動で追加起動し、--deep で 5 本に増やせる。MUST-ADDRESS は 1 件ずつ「直す」か「理由を記録して別のサブエージェントが検証」して片づける。Use when the user types /ai-review, or asks to "レビューして", "push 前に見て", "ブランチをレビュー", "未コミットをレビュー". Does NOT modify source code.
 metadata:
   author: sinoda
   version: 3.0.0
@@ -44,7 +44,7 @@ push 前の**唯一のゲート**。レビュー本体は書かない。同梱�
 | 名前（出力ファイル名） | 中身 | モデル / effort | いつ |
 |---|---|---|---|
 | `own-review` | `prompts/own-review.md` | claude-opus-5-5 / high | 毎回 |
-| `codex-review` | `codex exec review`（純正。独自の指示は渡さない） | gpt-6-sol / high | 毎回 |
+| `codex-review` | `codex exec review`（純正。独自の指示は渡さない） | gpt-6.1-sol / high | 毎回 |
 | `own-security` | `prompts/own-security.md` | claude-opus-5-5 / high | 昇格時（`--security`）と `--deep` |
 | `own-review-fable` | `prompts/own-review.md` | claude-fable-5-1 / high | `--deep` |
 | `codex-astra` | `codex exec review`（純正） | gpt-6-astra / high | `--deep` |
@@ -210,7 +210,7 @@ $SKILL/scripts/record-gate.sh --verdict <pass|must-address|block> --items "$run/
 ## 対象
 - Base: origin/main (merge-base abc1234) → HEAD def5678 / branch feat/xxx
 - 変更: N files, +A/-D
-- 実行: own-review (claude-opus-5-5/high, 1m30s) ‖ codex-review (gpt-6-sol/high, 1m20s) [‖ own-security ‖ own-review-fable ‖ codex-astra]
+- 実行: own-review (claude-opus-5-5/high, 1m30s) ‖ codex-review (gpt-6.1-sol/high, 1m20s) [‖ own-security ‖ own-review-fable ‖ codex-astra]
 - 判定表: 全ファイルあり / 再実行 1 回で補完 / 判定なし（要確認）: path/a, path/b
 - レビュー対象外: .env（秘密情報のため Codex 未送信）
 
