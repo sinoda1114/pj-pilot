@@ -1,0 +1,3 @@
+# npm audit の例外リスト（書式と判定は sinoda1114/ci-standard の README「audit の例外リスト」）。
+# GHSA-ID              期限        理由
+GHSA-vfj7-8cjw-p6xm    2026-12-31  braces（high）。修正版なし（最新の 3.0.3 も影響範囲）。eslint-config-next → @next/eslint-plugin-next → fast-glob → micromatch 経由の開発用依存で、本番のバンドルには入らない。修正版が出たら行を消す
