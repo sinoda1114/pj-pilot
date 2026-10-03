@@ -54,7 +54,7 @@
 | 名前 | 中身 | モデル / effort | 起動 |
 |---|---|---|---|
 | own-review | `prompts/own-review.md` | claude-opus-5-5 / high | 毎回 |
-| codex-review | `codex exec review`（純正） | gpt-6-sol / high | 毎回 |
+| codex-review | `codex exec review`（純正） | gpt-6.1-sol / high | 毎回 |
 | own-security | `prompts/own-security.md` | claude-opus-5-5 / high | 昇格・`--security`・`--deep` |
 | own-review-fable | `prompts/own-review.md` | claude-fable-5-1 / high | `--deep` |
 | codex-astra | `codex exec review`（純正） | gpt-6-astra / high | `--deep` |
@@ -146,3 +146,12 @@
 
 - Codex がレビュー対象の `.codex/config.toml` を読む経路: 起動に `-c notify=[] -c mcp_servers={}` を付けて notify と MCP は打ち消した。信頼済みリポジトリの worktree で `model_provider`（送信先の差し替え）が読まれるかは未確認（2026-09-24、6 周目の own-security の指摘）。
 - 人の承認（`--approve-human`）は、端末（/dev/tty）で項目の ID を打ち込んだときだけ記録する（2026-09-24、7 周目の own-security の指摘）。AI の Bash には端末が無いので誤って書く経路は塞げるが、疑似端末（python の pty など）を作れば AI でも通せる。技術的な強制ではなく、手順と記録で担保する前提は変わらない。
+
+## 追記 2026-10-03: Codex 側のモデルを gpt-6-sol → gpt-6.1-sol
+
+| 項目 | 変更前 | 変更後 | 根拠（OWASP 110 件、純正 `codex exec review`、2026-09-30） |
+|---|---|---|---|
+| codex-review | gpt-6-sol | gpt-6.1-sol | 0.964 → 0.982。全方式共通の最難関 00007（envp 差し替えによる BASH_ENV 注入）を初めて正解し、見逃しは 00050 の 1 件のみ。所要は 1 カテゴリ約 90 秒で同程度 |
+
+- Codex CLI 0.155.1 では gpt-6.1-sol が ChatGPT アカウントで拒否されるため、0.159.1 以上が必要。
+- Codex CLI 0.159 から `codex exec review` の本文が stdout に出なくなったが、`run-reviews.sh` は `-o` で最終メッセージを受けているため影響なし。
