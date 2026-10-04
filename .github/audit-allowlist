@@ -1,3 +1,3 @@
 # npm audit の例外リスト（書式と判定は sinoda1114/ci-standard の README「audit の例外リスト」）。
 # GHSA-ID              期限        理由
-GHSA-vfj7-8cjw-p6xm    2026-12-31  braces（high）。修正版なし（最新の 3.0.3 も影響範囲）。eslint-config-next → @next/eslint-plugin-next → fast-glob → micromatch 経由の開発用依存で、本番のバンドルには入らない。修正版が出たら行を消す
+GHSA-vfj7-8cjw-p6xm    2026-12-31  braces（high、CVE-2026-93687）は深くネストしたパターンでスタックを使い切らせる DoS（コード実行・情報漏えいではない）。修正版なし（最新の 3.0.3 も影響範囲）。開発用の eslint-config-next → @next/eslint-plugin-next → fast-glob → micromatch 経由のみで（npm ls --omit=dev で braces が出ないことを 2026-10-04 に確認）、braces に渡るのは自分の ESLint 設定の値で外部の入力は届かない。2026-12-31 は修正版を待つ日ではなく再評価する日（修正版が無ければ継続・差し替え・根拠の再確認のどれかを決める）。修正版が出たら行を消す
