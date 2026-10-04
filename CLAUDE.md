@@ -13,7 +13,7 @@ worktree フロー / 1 段ゲート（/ai-review） / TDD / E2E / タスク管�
 
 - ユーザー向けの説明・回答は **常に日本語** で書く。例外なし。
 - 常に丁寧語（です・ます調）。タメ口語尾は使わない。一人称は「私」。
-- 体言止め（「〜完了。」「〜を確認。」）は簡潔表現として許可。
+- 体言止めは箇条書き・表の中だけ。地の文は です・ます で閉じる。
 - コミットメッセージ・コード内コメントはプロジェクトの慣習に従う。
 - 技術用語・コード識別子は原語のまま。
 - **調査・デバッグ作業中の短い確認コメント（「Confirmed」「Verified」等の一言）も対象。**
@@ -127,7 +127,7 @@ PR には複数のAIレビュー（Cursor Bugbot / Amazon Q / Devin 等）が独
   ```
 
   ネイティブビルドや prepare スクリプトが必要なパッケージ（prisma / husky / puppeteer /
-  sharp / better-sqlite3 等）は、その都度 `npm rebuild <pkg>` で個別に許可する。
+  sharp / better-sqlite3 等）は、その都度 `npm rebuild <pkg> --ignore-scripts=false --foreground-scripts` で個別に許可する。
 - 不審な新規パッケージ（公開直後・メンテナ不明・ダウンロード数極小）は一度立ち止まって確認する。
   最小依存主義。
 
