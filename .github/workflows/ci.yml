@@ -25,4 +25,4 @@ permissions:
 # inherit ではなく `secrets:` マップで必要なものだけを明示的に渡すこと。
 jobs:
   ci:
-    uses: sinoda1114/ci-standard/.github/workflows/node-ci.yml@main
+    uses: sinoda1114/ci-standard/.github/workflows/node-ci.yml@feat/allowlist-hardening
