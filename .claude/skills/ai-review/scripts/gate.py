@@ -102,9 +102,8 @@ def _clean_cell(c):
     return _unwrap(c)
 
 
-def _repo_path(f):
-    """項目の file をリポジトリからの相対パスにする（./、隔離 worktree や本体の絶対パスを外す）。"""
-    f = _clean_cell(f or "")
+def _strip_root(f):
+    """隔離 worktree や本体の絶対パスを外す。"""
     if f.startswith("/"):
         m = re.match(r"^.*?/ai-review-wt\.[^/]+/(.*)$", f)
         if m:
@@ -114,6 +113,43 @@ def _repo_path(f):
             if f.startswith(root):
                 f = f[len(root):]
     return f
+
+
+def _repo_path(f):
+    """項目の file をリポジトリからの相対パスにする（./、隔離 worktree や本体の絶対パスを外す）。"""
+    return _strip_root(_clean_cell(f or ""))
+
+
+def _in_tree(rev, path):
+    """path が rev の木にあるか。git が失敗したら None（呼び出し側は「分からない」を安全な側に倒す）"""
+    if not (isinstance(rev, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", rev)):
+        return None  # 記録から読んだ値なので、SHA の形でなければ git に渡さない
+    if "\0" in path:
+        return False  # NUL を含む名前のファイルは作れない
+    import subprocess
+    try:
+        r = subprocess.run(["git", "--literal-pathspecs", "ls-tree", "-z", "--full-tree", "--name-only", rev, "--", path],
+                           capture_output=True)
+    except (OSError, ValueError):
+        return None
+    if r.returncode != 0:
+        return None
+    return path.encode("utf-8", "surrogateescape") in r.stdout.split(b"\0")
+
+
+def _in_diff(f, changed, item_head):
+    """項目の file が、差分の一覧（git が出した生のパスの集合）にあるか。
+    項目が指すファイルを、項目を最初に記録したときの木（item_head）で 1 つに決めてから比べる。整形しない形
+    （絶対パスと ./ だけ外す）がその木にあればそれ、無ければ整形（空白・:行番号・装飾を外す）した形。
+    整形した形と整形しない形の両方で比べると、変わった名前のファイル（`n8.js:12`）を足したり、それに付いた
+    fixed を `n8.js` の変更で片づけたりして、確かめていない fixed を再レビュー済みにできる（ai-review#5 の 8）。
+    git で決められなければ一致にしない（fixed は open に戻る）"""
+    f = f or ""
+    raw = re.sub(r"^\./", "", _strip_root(f))
+    exists = _in_tree(item_head, raw)
+    if exists is None:
+        return False
+    return (raw if exists else _repo_path(f)) in changed
 
 
 def _table_lines(text):
@@ -498,6 +534,27 @@ def read_json(path):
     return d if isinstance(d, dict) else {}
 
 
+def carried_over(it):
+    """前回の記録の項目が、次の周の記録に持ち越されるか（再レビュー済みの fixed だけは持ち越さない）。
+    cmd_record の引き継ぎと carries_block の両方がこれを使う（片方だけ変えると block が消える穴が戻る）"""
+    return not (it.get("status") == "fixed" and it.get("re_reviewed_sha"))
+
+
+def carries_block(prev):
+    """前回の記録に、次の周へ BLOCK を持ち越す項目があるか。
+    未再レビューの fixed の BLOCK も True にする。heavy_fixed（tier == BLOCK）が拾って次の周は全体レビューに
+    なるので block は消えない（heavy_fixed の条件を緩めるときは、ここも見直す）"""
+    return any(isinstance(it, dict) and it.get("tier") == "BLOCK" and carried_over(it)
+               for it in prev.get("must_address") or [])
+
+
+def block_not_carried(prev):
+    """結論が block なのに、次の周へ BLOCK を持ち越す項目が無い記録か。差分レビューが引き継ぐのは項目だけなので、
+    この記録の次を差分レビューにすると block が消え、差分で何も出なければ pass になる（ai-review#5 の 9）。
+    チェーンは切らずに（深掘りの義務 chain_escalated や full_count を残すため）、次の周を全体にする"""
+    return prev.get("verdict") == "block" and not carries_block(prev)
+
+
 def chain_continues(prev, branch, merge_base, prev_ancestor, dry=False):
     """前回の記録が、今回のレビューと同じチェーン（同じブランチ・同じ起点・HEAD の祖先）にあるか"""
     return bool(
@@ -573,6 +630,8 @@ def cmd_plan(a):
         # 差分レビューは「そのファイルが差分にあるか」までしか確かめられない。重い項目と、一度 open に戻した項目の
         # fixed は全体で確かめる（戻した項目は、差分レビューを続ける限り確かめられない）
         out["why"] = "BLOCK・高リスク・セキュリティ、または差分に入らなかった項目を fixed にしたので、全体で確かめる"
+    elif block_not_carried(prev):
+        out["why"] = "前回の結論は block だが、引き継げる BLOCK の項目が無い（差分レビューでは block を引き継げない）ので、全体を見る"
     elif large and prev.get("chain_size_escalated") is not True:
         # 規模による深掘りがまだのブランチは、深掘りが全体を見るように、この周を全体にする
         out["why"] = "ブランチ全体が規模の上限を超えたが、まだ規模による深掘りをしていないので、全体を深掘りする"
@@ -672,6 +731,9 @@ def cmd_record(a):
             die("前回の記録に、差分レビューでは確かめきれない fixed（%s）があります。"
                 "run-reviews.sh --full で全体をレビューしてから記録してください"
                 % ", ".join(str(it.get("id")) for it in heavy_fixed(prev, path_rules(a.rules or [])))[:200])
+        if scope["scope"] == "incremental" and block_not_carried(prev):
+            die("前回の記録の結論は block ですが、引き継げる BLOCK の項目がありません（差分レビューでは block を"
+                "引き継げません）。run-reviews.sh --full で全体をレビューしてから記録してください")
         if size_skipped and not chained:
             die("規模による昇格を飛ばした run ですが、前回の記録とつながりません（規模の判定は 1 周目に要る）")
         if (scope["scope"] == "full" and chained and prev.get("chain_escalated") is True
@@ -747,24 +809,33 @@ def cmd_record(a):
         taken.add(cid)
         return cid
     if incremental and a.run:
-        # 削除・名前変更の旧パスも含む一覧（changed-files-all.txt）を使う。判定表用の changed-files.txt は削除を除いている
-        for name in ("changed-files.txt", "changed-files-all.txt"):
-            try:
-                with open(os.path.join(a.run, name), encoding="utf-8") as f:
-                    changed |= {_repo_path(ln.strip()) for ln in f if ln.strip()}
-            except OSError:
-                pass
+        # 削除・名前変更の旧パスも含む一覧（changed-files-all.nul。NUL 区切り）を使う。判定表用の changed-files.txt は
+        # 削除を除き、改行区切りなので使わない。git が出したパスはそのまま比べる（strip や _repo_path の整形をすると、
+        # 改行・末尾の空白・:行番号 を含む名前のファイルで別のパスを「差分にある」と見せかけられる。ai-review#5 の 8）。
+        # newline="" で読む（既定の改行変換は CR を LF に変え、CR と LF だけが違う別のパスを一致させる）
+        try:
+            with open(os.path.join(a.run, "changed-files-all.nul"), encoding="utf-8", errors="surrogateescape",
+                      newline="") as f:
+                changed = {p for p in f.read().split("\0") if p}
+        except OSError:
+            # 一覧が無ければ、差分にあると確かめられないので fixed は open に戻る
+            if os.path.exists(os.path.join(a.run, "changed-files-all.txt")):
+                print("[ai-review] 注意: run ディレクトリの変更ファイルの一覧が古い形式（changed-files-all.txt）です。"
+                      "fixed はすべて open に戻ります。run-reviews.sh を回し直してください", file=sys.stderr)
     if prev.get("branch") == a.branch and prev.get("head_sha") and prev.get("head_sha") != a.head:
         for it in prev.get("must_address") or []:
             if not isinstance(it, dict):
                 continue
             if (it.get("status") == "fixed" and not it.get("re_reviewed_sha") and incremental
-                    and _repo_path(it.get("file")) not in changed):
+                    and not _in_diff(it.get("file"), changed, it.get("item_head") or prev["head_sha"])):
                 # 差分レビューは差分の中しか見ないので、差分にそのファイルが無い fixed は確かめられていない。
                 # 再レビュー済みにせず、open に戻して引き継ぐ（偽の fixed で BLOCK・高リスクを抜けさせない）
                 c = dict(it, status="open")
                 c["id"] = carry_id(it.get("id"))
                 c["carried_from"] = prev.get("head_sha")
+                # 項目を最初に記録した HEAD は上書きせずに持ち回る（_in_diff は、項目が指すファイルをその木で決める。
+                # 直前の記録の木で決めると、間の周に足した同名のファイルで指す先をすり替えられる）
+                c["item_head"] = it.get("item_head") or prev.get("head_sha")
                 c["note"] = "fixed だったが、差分レビューの差分にこのファイルが無いので確かめられていない"
                 c["reopened"] = True  # また fixed にしたら、次の周は全体で確かめる（heavy_fixed）
                 carried.append(c)
@@ -774,12 +845,15 @@ def cmd_record(a):
                 c["re_reviewed_sha"] = a.head
                 c["previous_head_sha"] = prev.get("head_sha")
                 prev_fixed.append(c)
-            elif incremental and not (it.get("status") == "fixed" and it.get("re_reviewed_sha")):
+            elif incremental and carried_over(it):
                 # 差分レビューは前回より前のコードを見直さないので、同じ指摘は出直さない。
                 # 片づいていない項目（と、片づいた accepted）を引き継いで落とさない
                 c = dict(it)
                 c["id"] = carry_id(it.get("id"))
                 c["carried_from"] = prev.get("head_sha")
+                # 項目を最初に記録した HEAD は上書きせずに持ち回る（_in_diff は、項目が指すファイルをその木で決める。
+                # 直前の記録の木で決めると、間の周に足した同名のファイルで指す先をすり替えられる）
+                c["item_head"] = it.get("item_head") or prev.get("head_sha")
                 if c.get("status") == "accepted":
                     # 理由が差分のどこ（別のファイルの呼び出し元など）に依存するかは機械では分からない。
                     # HEAD が進んだので、検証と人の承認をやり直す（理由そのものは残す）

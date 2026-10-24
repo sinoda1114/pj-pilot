@@ -349,9 +349,10 @@ if [ "$mode" = "local" ]; then
 elif [ -n "$base" ]; then
   git -C "$repo_top" diff --numstat --no-renames --diff-filter=d -z "$base...$reviewed_sha" 2>/dev/null | list_numstat >> "$changed"
   # 削除・名前変更の旧パスも含む一覧（record が差分レビューの fixed の照合に使う）
-  # 日本語などのパスを引用形式（"\346..."）にしないよう core.quotePath=false で取る
-  git -C "$repo_top" -c core.quotePath=false diff --name-only --no-renames -z "$base...$reviewed_sha" 2>/dev/null |
-    tr '\0' '\n' > "$out/changed-files-all.txt"
+  # 日本語などのパスを引用形式（"\346..."）にしないよう core.quotePath=false で取る。
+  # NUL 区切りのまま残す（改行区切りにすると、改行を含む名前のファイルで別のパスを「差分にある」と見せかけられる）
+  git -C "$repo_top" -c core.quotePath=false diff --name-only --no-renames -z "$base...$reviewed_sha" 2>/dev/null \
+    > "$out/changed-files-all.nul"
 fi
 echo "changed_files=$(wc -l < "$changed" | tr -d ' ')" >> "$status"
 # リポジトリ単位の core.hooksPath はグローバルより優先されるので、グローバルに入れた pre-push ゲートが動かない
