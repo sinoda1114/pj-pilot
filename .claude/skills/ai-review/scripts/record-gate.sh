@@ -104,11 +104,45 @@ if [ "$mode" = "branch" ]; then
       echo "比較範囲の起点（reviewed_base.review）か、origin/HEAD との merge-base が見つかりません。" >&2
       exit 1
     fi
+    # 差分レビュー（scope.json の scope=incremental）の起点は、前回レビューした SHA（scope.json の since）。
+    # それが本当に前回の記録の head_sha かは gate.py record が確かめる
+    want_base="$dmb"
+    if [ -f "$report_dir/scope.json" ]; then
+      inc_since="$("$py" -I -c 'import json,sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+print(d.get("since") or "" if d.get("scope") == "incremental" else "")' "$report_dir/scope.json" 2>/dev/null)" || {
+        echo "run ディレクトリの scope.json を読めません。/ai-review を回し直してください" >&2; exit 1; }
+      [ -n "$inc_since" ] && want_base="$inc_since"
+      # 差分レビューの記録は、効いている pre-push が差分レビューの決まり（全体レビュー 2 回 = full_count）を知っているときだけ
+      # 受け付ける。古いフックはこの決まりを知らないので、全体を 1 回しか経ていない記録でも push を通してしまう
+      if [ -n "$inc_since" ]; then
+        hp="$(git config --get core.hooksPath 2>/dev/null || true)"
+        [ -n "$hp" ] || hp="$(git rev-parse --git-path hooks 2>/dev/null)"
+        case "$hp" in "~/"*) hp="$HOME/${hp#\~/}" ;; esac
+        # 古い ai-review のフックかは、実行権に関係なく先に見る（実行権を付けると、古いフックのまま効きはじめるため）
+        if [ -f "$hp/pre-push" ] && grep -q 'ai-review-managed-hook' "$hp/pre-push" && ! grep -q 'full_count' "$hp/pre-push"; then
+          echo "効いている pre-push（$hp/pre-push）が古い ai-review のフックで、差分レビューの記録を正しく検査できません。" >&2
+          echo "スキルの hooks/pre-push に入れ替えてから記録し直してください（SKILL.md §6）。" >&2
+          exit 1
+        elif [ -f "$hp/pre-push" ] && [ ! -x "$hp/pre-push" ]; then
+          echo "[ai-review] 注意: 効いている場所の pre-push（$hp/pre-push）に実行権がありません。git は動かさないので、push のゲートが効いていません（chmod +x が要ります）" >&2
+        elif [ -f "$hp/pre-push" ] && ! grep -q 'ai-review-managed-hook' "$hp/pre-push"; then
+          echo "[ai-review] 注意: 効いている pre-push（$hp/pre-push）は ai-review のフックではありません。push のゲートが効いていない可能性があります" >&2
+        elif [ ! -f "$hp/pre-push" ]; then
+          echo "[ai-review] 注意: 効いている場所（$hp）に pre-push がありません。push のゲートが効いていません（SKILL.md §6）" >&2
+        fi
+      fi
+    fi
     for f in "$report_dir"/reviewed_base.*; do
       [ -f "$f" ] || continue
-      if [ "$(head -n 1 "$f")" != "$dmb" ]; then
-        echo "レビューした比較範囲の起点（$(head -c 7 "$f")、$(basename "$f")）が、$dbase との merge-base（${dmb:0:7}）と違います。" >&2
-        echo "既定の比較元（--base を付けない）で /ai-review を回し直してください。" >&2
+      if [ "$(head -n 1 "$f")" != "$want_base" ]; then
+        if [ -n "${inc_since:-}" ]; then
+          echo "レビューした比較範囲の起点（$(head -c 7 "$f")、$(basename "$f")）が、差分レビューの起点（scope.json の since: ${inc_since:0:7}）と違います。" >&2
+          echo "レビューの後に latest.json が変わったか、run が途中で作り直されました。/ai-review を回し直してください。" >&2
+        else
+          echo "レビューした比較範囲の起点（$(head -c 7 "$f")、$(basename "$f")）が、$dbase との merge-base（${dmb:0:7}）と違います。" >&2
+          echo "既定の比較元（--base を付けない）で /ai-review を回し直してください。" >&2
+        fi
         exit 1
       fi
     done
@@ -134,13 +168,20 @@ if [ "$mode" = "branch" ] && [ "$no_diff" != "true" ] && [ "$done_flag" = "true"
   fi
 fi
 branch="$(git rev-parse --abbrev-ref HEAD)"
+# 差分レビューのチェーン（gate.py が前回の記録とのつながりを確かめる）
+cbase="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+chain_mb="$([ -n "$cbase" ] && git merge-base "$cbase" HEAD 2>/dev/null || true)"
+prev_head="$(sed -n 's/.*"head_sha": *"\([0-9a-f]*\)".*/\1/p' .review-reports/latest.json 2>/dev/null | head -1)"
+prev_anc=false
+[ -n "$prev_head" ] && git merge-base --is-ancestor "$prev_head" HEAD 2>/dev/null && prev_anc=true
 
 mkdir -p .review-reports
 # 値は --x=値 の形で渡す（- で始まる理由を argparse がオプションと取り違えないように）
 set -- record --verdict="$verdict" --head="$sha" --branch="$branch" --mode="$mode" \
   --escalate="$escalate" --escalation-done="$done_flag" --skipped-by-user="$skipped" \
   --reason="$reason" --report="$report" --previous .review-reports/latest.json \
-  --rules "$here/../escalation-rules.txt" --rules ".ai-review/escalation-rules.local.txt"
+  --rules "$here/../escalation-rules.txt" --rules ".ai-review/escalation-rules.local.txt" \
+  --merge-base="$chain_mb" --prev-ancestor="$prev_anc"
 [ -n "$items" ] && set -- "$@" --items="$items"
 [ -n "$report_dir" ] && set -- "$@" --run "$report_dir"
 [ "$no_diff" = "true" ] && set -- "$@" --no-diff

@@ -7,9 +7,11 @@
 #     --local        未コミット差分（staged + unstaged + untracked）を対象にする
 #     --rules        共通ルール（既定: このスクリプトと同じディレクトリの ../escalation-rules.txt）
 #     --local-rules  プロジェクト追記（既定: $PWD/.ai-review/escalation-rules.local.txt、無ければ無視）
+#     --no-size      規模（max_files / max_added）では昇格させない。同じブランチの 2 周目以降に使う
+#                    （規模による深掘りは 1 周目で済んでいる。DESIGN-v3.md §10）
 #
 # 出力: JSON 1 行を stdout に出す。
-#   {"escalate":true|false,"reasons":[...],"secret_paths":[...],"files":N,"added":N,"base":"..."}
+#   {"escalate":true|false,"reasons":[...],"secret_paths":[...],"files":N,"added":N,"base":"...","size_skipped":true|false}
 # 終了コード: 0 = 判定完了（escalate の真偽は JSON で見る）、2 = git 取得失敗
 #
 # bash 3.2（macOS 既定）で動く。連想配列・mapfile は使わない。
@@ -20,6 +22,7 @@ rules="$here/../escalation-rules.txt"
 local_rules="$PWD/.ai-review/escalation-rules.local.txt"
 base=""
 mode="branch"
+no_size=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -27,6 +30,7 @@ while [ $# -gt 0 ]; do
     --local) mode="local"; shift ;;
     --rules) rules="$2"; shift 2 ;;
     --local-rules) local_rules="$2"; shift 2 ;;
+    --no-size) no_size=true; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -187,8 +191,10 @@ reasons=""
 read_rules "$rules"
 read_rules "$local_rules"
 
+if [ "$no_size" = "false" ]; then
 [ -n "$max_files" ] && [ "$file_count" -gt "$max_files" ] && add_reason "C:size:files=$file_count>$max_files"
 [ -n "$max_added" ] && [ "$added_count" -gt "$max_added" ] && add_reason "C:size:added=$added_count>$max_added"
+fi
 
 # JSON 文字列のエスケープ。制御文字を必ず潰す。
 # 生のタブ・改行が混じると JSON が壊れ、SKILL.md §3.2 がこれを読めずゲートの
@@ -228,6 +234,6 @@ EOF
 escalate=false
 [ -n "$(printf '%s' "$reasons" | sed '/^$/d')" ] && escalate=true
 
-printf '{"escalate":%s,"reasons":%s,"secret_paths":%s,"files":%s,"added":%s,"base":"%s"}\n' \
+printf '{"escalate":%s,"reasons":%s,"secret_paths":%s,"files":%s,"added":%s,"base":"%s","size_skipped":%s}\n' \
   "$escalate" "$(to_json_array "$reasons")" "$(to_json_array "$secret_paths")" \
-  "$file_count" "$added_count" "$(json_escape "$base")"
+  "$file_count" "$added_count" "$(json_escape "$base")" "$no_size"

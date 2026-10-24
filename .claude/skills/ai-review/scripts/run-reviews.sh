@@ -10,6 +10,14 @@
 #     --security     通常の 2 本の代わりに own-security（セキュリティの深掘り）だけを起動する（昇格用）
 #     --deep         強化版。通常の 2 本に加えて own-security・own-review（Fable 5.1）・Codex（Astra）を並列で起動する
 #     --timeout      各コマンドの上限秒（既定 900）
+#     --full         差分レビューにせず、必ず全体（origin/HEAD...HEAD）をレビューする
+#     --incremental  規模に関係なく、前回の記録とつながっていれば差分レビューにする（/ai-review-fix の 2 周目以降）
+#
+# 範囲の自動選択（branch モード。DESIGN-v3.md §10）: 差分が大きい（escalation-rules の max_files /
+# max_added を超える）ブランチでは、前回の記録（.review-reports/latest.json）とつながる 2 周目以降、
+# 前回レビューした SHA から HEAD までの差分だけをレビューする。差分レビューが片づいたら最後に 1 回
+# 全体を見る。2 周目以降は規模による昇格をしない。決めた範囲は <out>/scope.json に残し、--security は
+# 同じ run の scope.json に従う。
 #
 # レビュアー（出力ファイル名 = 名前。DESIGN-v3.md §3）:
 #   own-review        prompts/own-review.md   × claude-opus-5-5 / high   （毎回）
@@ -32,6 +40,9 @@
 # 環境変数 AI_REVIEW_DRY_RUN=1 で実コマンドを起動せずダミー出力を書く（テスト用）。
 #   AI_REVIEW_DRY_TABLE_MISSING=1|once  自前観点のダミー出力から判定表の 1 行目を抜く（once は初回だけ）
 #   AI_REVIEW_DRY_VERDICT=PASS|MUST-ADDRESS|BLOCK  自前観点のダミー出力の結論
+#   AI_REVIEW_DRY_FAIL="<名前>:capacity|mention|other,..."  そのレビュアーを初回だけ失敗させる（capacity は Codex の混み合いの
+#     エラー行を出す。mention は「at capacity」という語を含むだけの別の失敗）
+#   AI_REVIEW_DRY_FAIL_RETRY=1|empty  回し直しも同じように失敗させる（empty は終了コード 0・空の出力）
 set -uo pipefail
 
 CLAUDE_MODEL="claude-opus-5-5"
@@ -59,11 +70,13 @@ script_dir="$here"  # 同梱スクリプトの場所（here は後で別の用�
 prompt_dir="$here/../prompts"
 gate_py="$here/gate.py"
 
-out=""; base=""; mode="branch"; use_codex=1; codex_off=""; security=0; deep=0; timeout_sec=900
+out=""; base=""; base_given=0; mode="branch"; use_codex=1; codex_off=""; security=0; deep=0; timeout_sec=900; force_full=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
-    --base) base="$2"; shift 2 ;;
+    --base) base="$2"; base_given=1; shift 2 ;;
+    --full) force_full=1; shift ;;
+    --incremental) force_incr=1; shift ;;
     --local) mode="local"; shift ;;
     --no-codex) use_codex=0; shift ;;
     --security) security=1; shift ;;
@@ -140,6 +153,45 @@ resolve_base() {
   echo ""
 }
 [ -n "$base" ] || base="$(resolve_base)"
+
+# ---- 範囲の選択（全体 / 前回レビューした SHA からの差分）----
+since=""; no_size=0
+if [ "$mode" != "local" ] && [ $base_given -eq 0 ] && [ -n "$base" ]; then
+  plan_top="$(git rev-parse --show-toplevel)"
+  if [ $security -eq 1 ] && [ -s "$out/scope.json" ]; then
+    : # 同じ run の通常のレビューが決めた範囲に従う
+  elif [ $security -eq 0 ]; then
+    plan_mb="$(git merge-base "$base" HEAD 2>/dev/null || true)"
+    prev_head="$(sed -n 's/.*"head_sha": *"\([0-9a-f]*\)".*/\1/p' "$plan_top/.review-reports/latest.json" 2>/dev/null | head -1)"
+    prev_anc=false
+    [ -n "$prev_head" ] && git merge-base --is-ancestor "$prev_head" HEAD 2>/dev/null && prev_anc=true
+    read -r plan_files plan_added < <(git diff --numstat "${plan_mb:-HEAD}" HEAD 2>/dev/null |
+      awk '{n++} $1 ~ /^[0-9]+$/ {s+=$1} END {print n+0, s+0}')
+    plan_args=(plan --latest "$plan_top/.review-reports/latest.json" --head "$(git rev-parse HEAD)"
+      --branch "$(git rev-parse --abbrev-ref HEAD)" --merge-base "$plan_mb" --prev-ancestor "$prev_anc" --prev-head "$prev_head"
+      --files "${plan_files:-0}" --added "${plan_added:-0}"
+      --rules "$script_dir/../escalation-rules.txt" --rules "$plan_top/.ai-review/escalation-rules.local.txt")
+    [ $force_full -eq 1 ] && plan_args+=(--full)
+    [ "${force_incr:-0}" -eq 1 ] && plan_args+=(--incremental)
+    [ "${AI_REVIEW_DRY_RUN:-0}" = "1" ] && plan_args+=(--dry)
+    if [ -n "$plan_mb" ] && "$py" -I "$gate_py" "${plan_args[@]}" > "$out/scope.json.tmp" 2>> "$status"; then
+      mv "$out/scope.json.tmp" "$out/scope.json"
+    else
+      rm -f "$out/scope.json.tmp"; echo '{"scope": "full", "since": "", "no_size": false, "why": "範囲を決められなかった"}' > "$out/scope.json"
+    fi
+  fi
+  if [ -s "$out/scope.json" ]; then
+    read -r since no_size < <("$py" -I -c 'import json,sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+print((d.get("since") or "-") if d.get("scope") == "incremental" else "-", 1 if d.get("no_size") else 0)' "$out/scope.json" 2>/dev/null)
+    [ "$since" = "-" ] && since=""
+    full_base="$base"
+    [ -n "$since" ] && base="$since"
+    echo "scope=$([ -n "$since" ] && echo "incremental since=$since" || echo full) no_size=${no_size:-0}" >> "$status"
+  fi
+elif [ $security -eq 0 ]; then
+  rm -f "$out/scope.json"
+fi
 
 # ---- 作業ツリーの隔離（branch / security モード）----
 # ブランチモードと昇格の対象はコミット済みの差分（base...HEAD）。ところが作業ツリーに
@@ -296,6 +348,10 @@ if [ "$mode" = "local" ]; then
     done >> "$changed"
 elif [ -n "$base" ]; then
   git -C "$repo_top" diff --numstat --no-renames --diff-filter=d -z "$base...$reviewed_sha" 2>/dev/null | list_numstat >> "$changed"
+  # 削除・名前変更の旧パスも含む一覧（record が差分レビューの fixed の照合に使う）
+  # 日本語などのパスを引用形式（"\346..."）にしないよう core.quotePath=false で取る
+  git -C "$repo_top" -c core.quotePath=false diff --name-only --no-renames -z "$base...$reviewed_sha" 2>/dev/null |
+    tr '\0' '\n' > "$out/changed-files-all.txt"
 fi
 echo "changed_files=$(wc -l < "$changed" | tr -d ' ')" >> "$status"
 # リポジトリ単位の core.hooksPath はグローバルより優先されるので、グローバルに入れた pre-push ゲートが動かない
@@ -312,6 +368,7 @@ if [ $security -eq 0 ] || [ ! -s "$out/escalation.json" ]; then
     echo '{"escalate": false, "reasons": [], "secret_paths": [], "dry_run": true}' > "$out/escalation.json"
   else
     esc_args=(); [ "$mode" = "local" ] && esc_args+=(--local); [ "$mode" != "local" ] && [ -n "$base" ] && esc_args+=(--base "$base")
+    [ "${no_size:-0}" = "1" ] && esc_args+=(--no-size)
     # 一時ファイルに書き、成功したときだけ置く（失敗で空のファイルを残さない）
     if ( cd "$repo_top" && "$script_dir/escalation-check.sh" ${esc_args[@]+"${esc_args[@]}"} ) > "$out/escalation.json.tmp" 2>> "$status"; then
       mv "$out/escalation.json.tmp" "$out/escalation.json"
@@ -321,8 +378,40 @@ if [ $security -eq 0 ] || [ ! -s "$out/escalation.json" ]; then
     fi
   fi
 fi
+# 差分レビューでも、秘密情報の判定はブランチ全体（merge-base から）で行う。差分の外（前の周）で入った .env などを
+# 見落とすと、そのファイルがある作業場所で Codex を起動してしまう（Codex は差分の外のファイルも読める）
+if [ -n "${since:-}" ] && [ -n "${full_base:-}" ] && [ -s "$out/escalation.json" ] && [ "${AI_REVIEW_DRY_RUN:-0}" != "1" -o "${AI_REVIEW_DRY_ESCALATION:-}" = "real" ]; then
+  if ( cd "$repo_top" && "$script_dir/escalation-check.sh" --base "$full_base" --no-size ) > "$out/escalation-full.json" 2>> "$status"; then
+    "$py" -I -c 'import json,sys
+d = json.load(open(sys.argv[1], encoding="utf-8")); f = json.load(open(sys.argv[2], encoding="utf-8"))
+sp = list(dict.fromkeys((d.get("secret_paths") or []) + (f.get("secret_paths") or [])))
+d["secret_paths"] = sp
+json.dump(d, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False)' "$out/escalation.json" "$out/escalation-full.json" 2>> "$status" ||
+      { echo "WARN: ブランチ全体の秘密情報の判定を足せなかった（Codex を起動しない）" >> "$status"; secret_full_failed=1
+        "$py" -I -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["secret_paths"]="?"; json.dump(d, open(p,"w"))' "$out/escalation.json"; }
+  else
+    echo "WARN: ブランチ全体の秘密情報の判定が失敗した（Codex を起動しない）" >> "$status"; secret_full_failed=1
+    "$py" -I -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["secret_paths"]="?"; json.dump(d, open(p,"w"))' "$out/escalation.json"
+  fi
+fi
+# 1 周目で深掘りが加わったブランチの最後の全体レビュー（scope.json の force_escalation）は、深掘りを必ず加える
+if [ $security -eq 0 ] && [ -s "$out/escalation.json" ] && [ -s "$out/scope.json" ]; then
+  "$py" -I -c 'import json,sys
+sc = json.load(open(sys.argv[1], encoding="utf-8"))
+if sc.get("force_escalation") is True:
+    p = sys.argv[2]; d = json.load(open(p, encoding="utf-8"))
+    d["escalate"] = True
+    why = {"size": "F:size:ブランチ全体が規模の上限を超えたが、まだ規模による深掘りをしていない"}
+    d["reasons"] = (d.get("reasons") or []) + [why.get(sc.get("force_reason"), "F:chain:1 周目で深掘りが加わったブランチの最後の全体レビュー")]
+    json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False)' "$out/scope.json" "$out/escalation.json" 2>> "$status" ||
+    echo "WARN: 最後の全体レビューの深掘りを escalation.json に書けなかった" >> "$status"
+fi
 # 秘密情報のファイルが差分にあれば、外部モデル（Codex）を起動しない（エージェントの --no-codex に頼らない）。
 # 判定できない（escalation.json が無い・読めない）ときも起動しない（止める側に倒す）
+# ブランチ全体の秘密情報を判定できなかったら、escalation.json を書き換えられたかに頼らず、ここで Codex を止める
+if [ "${secret_full_failed:-0}" = "1" ]; then
+  use_codex=0; codex_off="ブランチ全体の秘密情報を判定できない"
+fi
 if [ $use_codex -eq 1 ]; then
   n_secret="$("$py" -I -c 'import json,sys
 d = json.load(open(sys.argv[1], encoding="utf-8", errors="replace"))
@@ -344,6 +433,7 @@ if [ "$mode" = "local" ]; then
   target_line="対象: 未コミットの変更（ステージ済み・未ステージ・未追跡）"
 else
   target_line="比較範囲: ${base:-origin/HEAD}...HEAD の差分"
+  [ -n "$since" ] && target_line="比較範囲: ${since}...HEAD の差分（${since:0:7} までの変更はレビュー済み。それ以降に追加されたコミットを見る）"
 fi
 render_prompt() {
   TARGET_LINE="$target_line" awk '
@@ -412,13 +502,31 @@ dry_write() {
   return 0
 }
 
+# ダミーの失敗（テスト用）: AI_REVIEW_DRY_FAIL に名前があれば、その種類を返す
+dry_fail_mode() {
+  local m
+  m="$(printf ',%s,' "${AI_REVIEW_DRY_FAIL:-}" | sed -n "s/.*,$1:\([a-z]*\),.*/\1/p")"
+  [ -n "$m" ] && echo "$m"
+}
+dry_fail() {
+  : > "$out/$1.md"; printf '%s\0' sleep 0 > "$out/$1.cmd"
+  case "$(dry_fail_mode "$1")" in
+    capacity) echo "ERROR: Selected model is at capacity. Please try a different model." >> "$out/$1.err" ;;
+    mention) printf 'note: the docs say "at capacity" sometimes\nERROR: dry run failure\n' >> "$out/$1.err" ;;
+    *) echo "ERROR: dry run failure" >> "$out/$1.err" ;;
+  esac
+  return 1
+}
+
 # run_bg <name> <cmd...> : バックグラウンド起動し pid を返す。stdout は <out>/<name>.md、stderr は <name>.err
 pids=""; names=""
 run_bg() {
   local name="$1"; shift
   if [ "${AI_REVIEW_DRY_RUN:-0}" = "1" ]; then
     : > "$out/$name.err"
-    if [ "${AI_REVIEW_DRY_EMPTY:-0}" = "1" ]; then
+    if dry_fail_mode "$name" >/dev/null; then
+      ( dry_fail "$name" ) &
+    elif [ "${AI_REVIEW_DRY_EMPTY:-0}" = "1" ]; then
       # 空出力を作り、再試行の経路を通す（再試行するコマンドは sleep で代用する）
       printf '%s\0' sleep 30 > "$out/$name.cmd"; : > "$out/$name.md"
       ( sleep 1 ) &
@@ -562,7 +670,11 @@ is_failed() { case " $failed " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 # 同期実行 + `|| true` だと、途中まで出力して落ちた再試行が ok 扱いになり、応答待ちで止まるとゲート全体が戻らない。
 rerun_one() {
   local n="$1" why="$2" rp re=0 rc=0
-  if [ "${AI_REVIEW_DRY_RUN:-0}" = "1" ] && [ "${AI_REVIEW_DRY_EMPTY:-0}" != "1" ]; then
+  if [ "${AI_REVIEW_DRY_RUN:-0}" = "1" ] && [ "${AI_REVIEW_DRY_FAIL_RETRY:-0}" = "1" ] && dry_fail_mode "$n" >/dev/null; then
+    ( dry_fail "$n" ) &
+  elif [ "${AI_REVIEW_DRY_RUN:-0}" = "1" ] && [ "${AI_REVIEW_DRY_FAIL_RETRY:-0}" = "empty" ] && dry_fail_mode "$n" >/dev/null; then
+    ( : > "$out/$n.md" ) &  # 回し直しが終了コード 0・空の出力で終わる
+  elif [ "${AI_REVIEW_DRY_RUN:-0}" = "1" ] && [ "${AI_REVIEW_DRY_EMPTY:-0}" != "1" ]; then
     ( dry_write "$n" ) &
   else
     [ -f "$out/$n.cmd" ] || return 1
@@ -599,11 +711,31 @@ for n in $names; do
   fi
 done
 
+# Codex の「混み合い」（Selected model is at capacity）は外のサービスの一時的な失敗なので、
+# 少し待って 1 回だけ単独で回し直す（2026-10-12 の測定で 2 回起きた。待ち時間は AI_REVIEW_CAPACITY_WAIT 秒）
+for n in $names; do
+  case "$n" in codex-*) ;; *) continue ;; esac
+  is_failed "$n" || continue
+  is_timed_out "$n" && continue  # タイムアウトは混み合いの回し直しの対象にしない（通っても TIMEOUT として捨てられる）
+  # Codex のエラー行の形だけを見る（別の失敗の出力に「at capacity」という語が混ざっても待たない）
+  # grep -q は一致した時点で抜け、pipefail の下では tail の SIGPIPE で偽になりうるので、全部を読ませる
+  tail -n 20 "$out/$n.err" 2>/dev/null | grep -E '^(ERROR|error)[: ].*Selected model is at capacity' >/dev/null || continue
+  sleep "${AI_REVIEW_CAPACITY_WAIT:-60}"
+  failed="$(printf ' %s ' "$failed" | sed "s/ $n / /g")"
+  capacity_retried="${capacity_retried:-} $n"  # 空出力の回し直しを重ねない（回し直しは 1 回だけ）
+  rerun_one "$n" "Codex の混み合い: 待ってから単独で再実行"; rc=$?
+  [ $rc -eq 2 ] && timed_out="$timed_out $n"
+  [ $rc -eq 1 ] && failed="$failed $n"
+done
+
 # 空出力は単独で 1 回だけ回し直す。
 # 並列で同じ作業ツリーの npm test / next build を走らせると .next/ 等で衝突して片方が黙って
 # 終了することがある（2026-09-11 に実測。単独実行なら同じコマンドが正常に完走する）。ここで直列に取り直す。
 for n in $names; do
   if is_timed_out "$n" || is_failed "$n"; then continue; fi
+  case " ${capacity_retried:-} " in *" $n "*)
+    # 混み合いで回し直したものが空で終わったら、もう回さずに失敗にする
+    [ -s "$out/$n.md" ] || failed="$failed $n"; continue ;; esac
   if [ ! -s "$out/$n.md" ] && [ -f "$out/$n.cmd" ]; then
     rerun_one "$n" "空出力: 並列衝突とみなし単独で再実行"; rc=$?
     [ $rc -eq 2 ] && timed_out="$timed_out $n"
