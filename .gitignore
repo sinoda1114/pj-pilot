@@ -54,3 +54,6 @@ yarn-error.log*
 
 # サブエージェント用の git worktree（並列実装作業で使う一時ディレクトリ）
 .claude/worktrees/
+
+# /ai-review のレポート（ローカル専用。コミットしない）
+.review-reports/
