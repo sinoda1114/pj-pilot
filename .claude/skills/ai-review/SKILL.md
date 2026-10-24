@@ -59,6 +59,15 @@ Claude 側の道具は `Read,Grep,Glob,読み取り系の git サブコマンド
 | `/ai-review --local` | 未コミット差分（staged + unstaged + untracked） | 途中の任意チェック。何度でも。push の根拠にはならない |
 | `/ai-review --deep` | 既定と同じ | 強化版。own-security（常に）・own-review × Fable 5.1・Codex × Astra を通常の 2 本と並列で足す（計 5 本）。`--local` とも併用できる |
 | `/ai-review --security` | 既定と同じ | 深掘りだけを明示的に回す（通常は昇格で自動）。単独では push の根拠にならない（記録には通常の 2 本の `reviewed_sha.review` が要る） |
+| `/ai-review --full` | 既定と同じ | 差分レビューにせず、必ずブランチ全体を見る |
+
+**差分レビュー（大きいブランチの 2 周目以降）**: 差分が `escalation-rules` の `max_files` / `max_added` を超えるブランチでは、`run-reviews.sh` が範囲を自動で選ぶ（`$run/scope.json`。設計は `DESIGN-v3.md` §10）。
+- 1 周目は全体。前回の記録（`latest.json`）とつながる 2 周目以降は、**前回レビューした SHA から HEAD までの差分だけ**を見る。直しのたびにブランチ全体を見直して周回が延びるのを防ぐ。
+- 差分レビューで項目が片づいたら、次の実行で**最後に 1 回だけ全体**を見る。pre-push は、全体のレビューを 2 回（最初と最後）経ていない差分レビューの記録を通さない。最後の全体の後の直しは差分レビューで足りる。
+- 深掘り（own-security）も同じ範囲を見る。2 周目以降は、その周の差分が危険なパス・追加行（A・B 区分）に当たるか、セキュリティの指摘が出たときに加わる（§3.6）。規模（C 区分）では加わらない。
+- 1 周目で深掘りが加わったブランチは、最後の全体レビューでも必ず深掘りを加える（`escalation.json` に `F:chain` の理由が付く。`latest.json` の `chain_escalated`）。
+- 差分レビューでは、前回の未処理の項目を `carry-<ID>` として引き継ぐ（同じ指摘が出直さないため）。今の HEAD で §3.9 のとおり片づける。
+- 差分が小さいブランチは、今までどおり毎回全体を見る。
 
 既定モードでは、`run-reviews.sh` が常に HEAD の clean な worktree を一時的に作り、レビュアーはそこで動く（`status.txt` に `isolated:` の行が残る）。未コミットの変更も、レビュー中に別作業が書き換えた内容も、レビュー対象に混ざらない。`.env` や `node_modules` など ignore 済みの項目は本体へのリンクで用意される。初期化済みの submodule があるリポジトリだけは隔離せず、`status.txt` に `WARN` を残して元の作業ツリーで動く。理由と経緯は `DESIGN-v2.md` §12。
 
@@ -95,6 +104,7 @@ $SKILL/scripts/run-reviews.sh --out "$run"                 # 既定（own-review
 $SKILL/scripts/run-reviews.sh --out "$run" --deep          # 強化版（5 本）
 $SKILL/scripts/run-reviews.sh --out "$run" --local         # --local
 ```
+- 範囲は自動で決まる（§2 の差分レビュー）。`status.txt` の `scope=` 行と `scope.json` の `why` を、レポートの「対象」に書く。全体を見たいときだけ `--full` を付ける。
 - **終了を待ってから次へ進む。** Bash ツールの上限（600 秒）より長くかかることがある（通常 2 本で 5〜7 分、`--deep` で 12 分前後）。上限を超えそうならバックグラウンドで起動し、完了の通知を待つ。途中で止めない（止まった run は `reviewed_sha.*` が書かれず、記録できない）。
 - `escalation.json` が run ディレクトリに無ければ、`run-reviews.sh` が自分で作る。記録（branch）はこれを必須にし、`escalate=true` を `--escalate false` で打ち消せない。
 - 自前観点の出力の最後の行は `VERDICT: X`（機械が読む）。無ければ結論の節の最も重い語を採る（止める側）。
@@ -260,6 +270,7 @@ pre{background:var(--code-bg);color:var(--code-fg);padding:14px 16px;border-radi
 ```json
 {
   "version": 3, "head_sha": "…", "branch": "feat/x", "mode": "branch",
+  "scope": "full|incremental", "since_sha": "…（incremental のとき）", "chain_base": "…", "full_count": 1,
   "verdict": "pass|must-address|block", "floor_verdict": "…",
   "deep": false, "deep_recommended": true, "deep_recommend_reasons": ["…"],
   "escalate": true, "escalation_done": true, "skipped_by_user": false,
@@ -275,7 +286,7 @@ pre{background:var(--code-bg);color:var(--code-fg);padding:14px 16px;border-radi
 ```
 `status` は `open` / `fixed` / `accepted`。`verifier` は `pending` / `upheld` / `rejected`。高リスクの承認は `approved_by: "human"` と `approval_note`。
 
-フックの拒否条件: `head_sha ≠ push 対象 SHA` / `verdict = block` / `verdict = must-address` で処理済みでない項目がある / `mode ≠ branch` / `escalate かつ 未実施かつ 未スキップ` / verdict が不正（v2 の `fix` を含む）。処理済みとは「`fixed` で再レビュー済み（`re_reviewed_sha` = レビュー済み SHA）」または「`accepted` かつ `verifier = upheld` かつ（高リスクでない、または `approved_by = human`）」。緊急回避は `AI_REVIEW_BYPASS=1 git push`、コードでないリポジトリは `git config ai-review.skip true`。
+フックの拒否条件: `head_sha ≠ push 対象 SHA` / `verdict = block` / `verdict = must-address` で処理済みでない項目がある / `mode ≠ branch` / `escalate かつ 未実施かつ 未スキップ` / verdict が不正（v2 の `fix` を含む）/ `scope = incremental` かつ `full_count < 2`（最後の全体レビューがまだ）。処理済みとは「`fixed` で再レビュー済み（`re_reviewed_sha` = レビュー済み SHA）」または「`accepted` かつ `verifier = upheld` かつ（高リスクでない、または `approved_by = human`）」。緊急回避は `AI_REVIEW_BYPASS=1 git push`、コードでないリポジトリは `git config ai-review.skip true`。
 
 ## 6. pre-push フック導入（初回のみ案内）
 配布リポジトリの `install.sh` で入れるよう案内する（前提の確認、スキルの導入、フックへのスキルの場所の埋め込み、既存のフックとの競合の確認を行う）。スクリプトを使えないときの手作業:

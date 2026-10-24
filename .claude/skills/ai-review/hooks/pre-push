@@ -11,6 +11,7 @@
 #   4. escalate=true かつ escalation_done=false かつ skipped_by_user=false（昇格未実施）
 #   5. mode が branch でない（--local の記録は未コミット差分しか見ていないため push の根拠にしない）
 #   6. verdict が pass / must-address / block 以外（v2 の記録 fix を含む。再実行を求める）
+#   7. scope が incremental（差分レビュー）で、full_count（全体レビューの回数）が 2 未満（最後の全体レビューが要る）
 #
 # 項目の検査に python3 を使う（must-address のときだけ）。見つからなければ拒否する（黙って通さない）。
 #
@@ -99,6 +100,18 @@ esac
 if [ "$mode" != "branch" ]; then
   echo "[ai-review] 拒否: 記録が mode='$mode' です（--local の結果は push ゲートに使えません）。/ai-review（既定モード）を実行してください" >&2
   exit 1
+fi
+
+# 差分レビュー（前回レビューした SHA からの差分だけを見た記録）は、全体のレビューを最初と最後の 2 回
+# 経ていなければ通さない（差分レビューは、触っていないコードとの組み合わせを見直さない。DESIGN-v3.md §10）
+scope="$(get scope)"; full_count="$(get full_count)"
+if [ "$scope" = "incremental" ]; then
+  case "$full_count" in ''|*[!0-9]*) full_count=0 ;; esac
+  if [ "$full_count" -lt 2 ]; then
+    echo "[ai-review] 拒否: 直近の記録は差分レビューです。push の前に最後の全体レビューが要ります。" >&2
+    echo "  未処理の項目があれば、先に片づけてください（resolve-item.sh --list）。片づいていれば、/ai-review の再実行で自動で全体を見ます" >&2
+    exit 1
+  fi
 fi
 
 # push する各 ref の sha を、レビュー済み SHA と突き合わせる
