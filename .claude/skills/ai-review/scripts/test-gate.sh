@@ -733,6 +733,48 @@ run --out .review-reports/t5b; rec13 .review-reports/t5b --verdict pass >/dev/nu
 git config --unset core.quotePath
 [ "$(sget .review-reports/t5b/scope.json scope)" = "incremental" ] || ng "t5b が差分レビューにならない: $(cat .review-reports/t5b/scope.json)"
 case " $(ids) " in *" prev-J1:fixed "*) ok "日本語名のファイルを消して直した fixed も再レビュー済み（T5）" ;; *) ng "T5: $(ids)" ;; esac
+# T5n: 改行・末尾の空白・:行番号 を含む名前のファイルで、fixed のファイルが「差分にある」と見せかけない（ai-review#5 の 8）
+G checkout -q -b f8 origin/main
+echo 1 > n8.js; echo 2 > n9.js; G add n8.js n9.js; G commit -qm big
+run --out .review-reports/t5n1; rec13 .review-reports/t5n1 --verdict must-address --items "$(mk N1 n8.js MUST-ADDRESS correctness n false t5n)" >/dev/null 2>&1
+bash "$RI" --id N1 --fixed --note "直した（嘘）" >/dev/null 2>&1
+nlname="$(printf 'n8.js\nzz')"
+echo x > "$nlname"; echo x > 'n8.js '; echo x > 'n8.js:12'; G add -- "$nlname" 'n8.js ' 'n8.js:12'; G commit -qm trick
+run --out .review-reports/t5n2; rec13 .review-reports/t5n2 --verdict pass >/dev/null 2>&1
+[ "$(sget .review-reports/t5n2/scope.json scope)" = "incremental" ] || ng "t5n2 が差分レビューにならない: $(cat .review-reports/t5n2/scope.json)"
+case " $(ids) " in *" carry-N1:open "*) ok "改行・空白・:行番号 を含む名前のファイルでは、別のファイルの fixed を再レビュー済みにしない（T5n）" ;; *) ng "T5n: $(ids)" ;; esac
+# 逆向き: 変わった名前のファイルに付いた fixed を、普通の名前のファイルや CR と LF だけが違うファイルの変更で
+# 再レビュー済みにしない。実在しない「v8.js:3」のような書き方の揺れは、これまでどおり v8.js と照合する。
+# 書き方の揺れ（u8.js:3）と同じ名前のファイルを差分に足しても、u8.js の fixed を片づけたことにしない
+G checkout -q -b f9 origin/main
+lfname="$(printf 'c8\nzz.js')"; crname="$(printf 'c8\rzz.js')"
+echo 1 > w8.js; echo 2 > 'w8.js:12'; echo 3 > "$lfname"; echo 4 > v8.js; echo 5 > u8.js; G add -- w8.js 'w8.js:12' "$lfname" v8.js u8.js; G commit -qm big
+python3 - "$T/t5r.json" <<'PY'
+import json, sys
+it = lambda i, f: {"id": i, "source": "own-review", "file": f, "line": 1, "tier": "MUST-ADDRESS", "severity": "Medium",
+                   "category": "correctness", "summary": "x " + i, "high_risk": False}
+json.dump([it("B1", "w8.js:12"), it("C1", "c8\nzz.js"), it("V1", "v8.js:3"), it("U1", "u8.js:3")], open(sys.argv[1], "w"))
+PY
+run --out .review-reports/t5r1; rec13 .review-reports/t5r1 --verdict must-address --items "$T/t5r.json" >/dev/null 2>&1
+for i in B1 C1 V1 U1; do bash "$RI" --id $i --fixed --note "直した" >/dev/null 2>&1; done
+echo 5 >> w8.js; echo 6 > "$crname"; echo 7 >> v8.js; echo 8 > 'u8.js:3'; G add -- w8.js "$crname" v8.js 'u8.js:3'; G commit -qm trick2
+run --out .review-reports/t5r2; rec13 .review-reports/t5r2 --verdict pass >/dev/null 2>&1
+[ "$(sget .review-reports/t5r2/scope.json scope)" = "incremental" ] || ng "t5r2 が差分レビューにならない: $(cat .review-reports/t5r2/scope.json)"
+case " $(ids) " in *" carry-B1:open "*) ok "実在する w8.js:12 の fixed を、w8.js の変更で再レビュー済みにしない（T5n）" ;; *) ng "T5n（:行番号の逆向き）: $(ids)" ;; esac
+case " $(ids) " in *" carry-C1:open "*) ok "LF を含む名前の fixed を、CR だけが違う名前の変更で再レビュー済みにしない（T5n）" ;; *) ng "T5n（CR と LF）: $(ids)" ;; esac
+case " $(ids) " in *" prev-V1:fixed "*) ok "実在しない v8.js:3 は v8.js と照合し、変更があれば再レビュー済みにする（T5n）" ;; *) ng "T5n（書き方の揺れ）: $(ids)" ;; esac
+case " $(ids) " in *" carry-U1:open "*) ok "書き方の揺れ u8.js:3 と同じ名前のファイルを足しても、u8.js の fixed を再レビュー済みにしない（T5n）" ;; *) ng "T5n（揺れと同名のファイル）: $(ids)" ;; esac
+# 2 周に分けても同じ: 引き継いだ項目が指すファイルは、項目を最初に記録した周の木で決める（直前の周の木ではない）
+G checkout -q -b f10 origin/main
+echo 1 > x8.js; echo 2 > x9.js; G add x8.js x9.js; G commit -qm big
+run --out .review-reports/t5s1; rec13 .review-reports/t5s1 --verdict must-address --items "$(mk X1 'x8.js:12' MUST-ADDRESS correctness x false t5s)" >/dev/null 2>&1
+echo 3 > 'x8.js:12'; G add -- 'x8.js:12'; G commit -qm add-decoy
+run --out .review-reports/t5s2; rec13 .review-reports/t5s2 --verdict pass >/dev/null 2>&1
+bash "$RI" --id carry-X1 --fixed --note "直した（嘘）" >/dev/null 2>&1
+echo 4 >> 'x8.js:12'; G add -- 'x8.js:12'; G commit -qm touch-decoy
+run --out .review-reports/t5s3; rec13 .review-reports/t5s3 --verdict pass >/dev/null 2>&1
+[ "$(sget .review-reports/t5s3/scope.json scope)" = "incremental" ] || ng "t5s3 が差分レビューにならない: $(cat .review-reports/t5s3/scope.json)"
+case " $(ids) " in *" carry-X1:open "*) ok "間の周に足した同名のファイルで、引き継いだ項目の指す先をすり替えさせない（T5n）" ;; *) ng "T5n（2 周に分けたすり替え）: $(ids)" ;; esac
 # T6・T7: 引き継ぎだけでも must-address で記録でき、同じ run を記録し直せる
 G checkout -q -b f6 origin/main
 echo 1 > s1.js; echo 2 > s2.js; G add s1.js s2.js; G commit -qm big
@@ -973,6 +1015,79 @@ echo 1 > o93.js; G add o93.js; G commit -qm small
 AI_REVIEW_DRY_ESCALATION=real run --out .review-reports/cc3a
 bash "$RG" --verdict pass --escalate false --escalation-done false --skipped-by-user true --reason r --report .review-reports/cc3a/report.md >/dev/null 2>&1
 [ "$(jget chain_size_escalated)" = "false" ] && ok "昇格が求められていない記録の --skipped-by-user では、規模の深掘りを済んだ扱いにしない（CC3）" || ng "CC3: chain_size_escalated=$(jget chain_size_escalated)"
+# DD1: 引き継げる BLOCK の項目が無い block の記録の次は、チェーンを保ったまま全体レビューにする（ai-review#5 の 9）。
+# 差分レビューが引き継ぐのは項目だけなので、差分にすると block が消え、差分で何も出なければ pass で push できてしまう
+printf 'max_files 1\n' > .ai-review/escalation-rules.local.txt
+G checkout -q -b d91 origin/main
+echo 1 > d91.js; echo 2 > d92.js; G add d91.js d92.js; G commit -qm big
+run --out .review-reports/dd1a; rec13 .review-reports/dd1a --verdict pass
+echo 3 >> d91.js; G commit -qam dd1b
+run --out .review-reports/dd1b; rec13 .review-reports/dd1b --verdict pass
+run --out .review-reports/dd1c; rec13 .review-reports/dd1c --verdict block
+[ "$(jget verdict)" = "block" ] && [ "$(jget full_count)" = "2" ] || ng "DD1 の準備: verdict=$(jget verdict) full_count=$(jget full_count) $(cat "$T/rg.out")"
+hd1c="$(git rev-parse HEAD)"; cp "$latest" "$T/dd1c.json"
+echo 4 >> d91.js; G commit -qam dd1d
+run --out .review-reports/dd1d
+[ "$(sget .review-reports/dd1d/scope.json scope)" = "full" ] && [ "$(sget .review-reports/dd1d/scope.json no_size)" = "true" ] && grep -q '引き継げる BLOCK' .review-reports/dd1d/scope.json \
+  && ok "BLOCK の項目が無い block の記録の次は、チェーンを保ったまま全体レビュー（DD1）" || ng "DD1: $(cat .review-reports/dd1d/scope.json)"
+printf '{"scope": "incremental", "since": "%s"}' "$hd1c" > .review-reports/dd1d/scope.json
+echo "$hd1c" > .review-reports/dd1d/reviewed_base.review
+if rec13 .review-reports/dd1d --verdict pass; then
+  hook && ng "BLOCK の項目が無い block の記録につないだ差分レビューが pass になり、push を通した（DD1）" || ng "BLOCK の項目が無い block の記録につないで差分レビューを記録できた（DD1）"
+else
+  grep -q '引き継げる BLOCK の項目がありません' "$T/rg.out" && ok "BLOCK の項目が無い block の記録につなぐ差分レビューは記録しない（DD1）" || ng "DD1 の記録が別の理由で止まった: $(cat "$T/rg.out")"
+fi
+# 再レビュー済みの fixed（引き継がれない）しか BLOCK の項目が無い block の記録も同じ
+cp "$T/dd1c.json" "$latest"
+python3 - "$latest" "$hd1c" <<'PY'
+import json,sys; p=sys.argv[1]; d=json.load(open(p))
+d["must_address"] = [{"id": "prev-B0", "source": "own-review", "file": "d91.js", "line": 1, "tier": "BLOCK", "severity": "High",
+                      "summary": "x", "high_risk": False, "category": "correctness", "status": "fixed", "re_reviewed_sha": sys.argv[2]}]
+json.dump(d, open(p, "w"), ensure_ascii=False, indent=2)
+PY
+run --out .review-reports/dd1e
+[ "$(sget .review-reports/dd1e/scope.json scope)" = "full" ] && ok "BLOCK の項目が再レビュー済みの fixed だけの block の記録の次も全体レビュー（DD1）" || ng "DD1（再レビュー済み）: $(cat .review-reports/dd1e/scope.json)"
+printf '{"scope": "incremental", "since": "%s"}' "$hd1c" > .review-reports/dd1e/scope.json
+echo "$hd1c" > .review-reports/dd1e/reviewed_base.review
+if rec13 .review-reports/dd1e --verdict pass; then
+  ng "BLOCK の項目が再レビュー済みの fixed だけの block の記録につないで差分レビューを記録できた（DD1）"
+else
+  grep -q '引き継げる BLOCK の項目がありません' "$T/rg.out" && ok "BLOCK の項目が再レビュー済みの fixed だけの block の記録につなぐ差分レビューも記録しない（DD1）" || ng "DD1（再レビュー済み）の記録が別の理由で止まった: $(cat "$T/rg.out")"
+fi
+# 未再レビューの fixed の BLOCK は持ち越す扱いだが、heavy_fixed で全体レビューになる（block は消えない）
+cp "$T/dd1c.json" "$latest"
+python3 - "$latest" <<'PY'
+import json,sys; p=sys.argv[1]; d=json.load(open(p))
+d["must_address"] = [{"id": "B0", "source": "own-review", "file": "d91.js", "line": 1, "tier": "BLOCK", "severity": "High",
+                      "summary": "x", "high_risk": False, "category": "correctness", "status": "fixed"}]
+json.dump(d, open(p, "w"), ensure_ascii=False, indent=2)
+PY
+run --out .review-reports/dd1f
+[ "$(sget .review-reports/dd1f/scope.json scope)" = "full" ] && grep -q 'fixed にしたので' .review-reports/dd1f/scope.json && ok "BLOCK の項目が未再レビューの fixed の block の記録の次は、heavy_fixed で全体レビュー（DD1）" || ng "DD1（未再レビュー）: $(cat .review-reports/dd1f/scope.json)"
+# 全体に戻しても、1 周目の深掘りの義務（chain_escalated）は残り、最後の全体レビューに深掘りを強制する
+G checkout -q -b d93 origin/main
+echo 1 > d95.js; echo 2 > d96.js; G add d95.js d96.js; G commit -qm big
+run --out .review-reports/dd3a
+bash "$RG" --verdict pass --escalate true --escalation-done false --skipped-by-user true --reason r --report .review-reports/dd3a/report.md >"$T/rg.out" 2>&1
+[ "$(jget chain_escalated)" = "true" ] || ng "DD1 の準備（深掘り）: chain_escalated=$(jget chain_escalated) $(cat "$T/rg.out")"
+echo 3 >> d95.js; G commit -qam dd3b
+run --out .review-reports/dd3b; rec13 .review-reports/dd3b --verdict block
+[ "$(jget scope)" = "incremental" ] && [ "$(jget verdict)" = "block" ] || ng "DD1 の準備（差分の block）: scope=$(jget scope) verdict=$(jget verdict) $(cat "$T/rg.out")"
+echo 4 >> d96.js; G commit -qam dd3c
+run --out .review-reports/dd3c
+[ "$(sget .review-reports/dd3c/scope.json scope)" = "full" ] && [ "$(sget .review-reports/dd3c/scope.json force_escalation)" = "true" ] && [ "$(sget .review-reports/dd3c/scope.json force_reason)" = "chain" ] \
+  && ok "BLOCK の項目が無い差分の block の次の全体レビューにも、1 周目の深掘りを強制する（DD1）" || ng "DD1（深掘りの義務）: $(cat .review-reports/dd3c/scope.json)"
+# 引き継げる BLOCK の項目がある block の記録とは、これまでどおりつなぎ、block を項目ごと引き継ぐ
+G checkout -q -b d92 origin/main
+echo 1 > d93.js; echo 2 > d94.js; G add d93.js d94.js; G commit -qm big
+run --out .review-reports/dd2a
+itb="$(items '[{"id":"B1","source":"own-review","file":"d93.js","line":1,"tier":"BLOCK","severity":"High","summary":"入力を検査していない","high_risk":false,"category":"correctness"}]')"
+rec13 .review-reports/dd2a --verdict block --items "$itb" || ng "DD1 の準備（BLOCK の項目あり）: $(cat "$T/rg.out")"
+echo 3 >> d94.js; G commit -qam dd2b
+run --out .review-reports/dd2b
+rec13 .review-reports/dd2b --verdict pass
+[ "$(sget .review-reports/dd2b/scope.json scope)" = "incremental" ] && [ "$(jget verdict)" = "block" ] && jget must_address | grep -q '"carry-B1"' \
+  && ok "未処理の BLOCK の項目がある block の記録には差分レビューでつなぎ、block を引き継ぐ（DD1）" || ng "DD1（BLOCK の項目あり）: $(cat .review-reports/dd2b/scope.json) verdict=$(jget verdict) $(cat "$T/rg.out")"
 rm -rf .ai-review
 
 echo "13c. Codex の混み合い（at capacity）は、待ってから 1 回だけ回し直す"
