@@ -40,7 +40,7 @@ git worktree remove ../pj-pilot-<topic>   # マージ後に撤去
   規模、セキュリティ指摘あり）はセキュリティの深掘り own-security を**機械判定で自動起動**する。人が別途叩く運用はしない。
   `MUST-ADDRESS` は 1 件ずつ「直す」か「理由を記録して別サブエージェントが検証」して片づける。
   高リスク項目の人の承認は、ユーザー自身が端末で `resolve-item.sh --approve-human` を実行する（AI は代行しない）。
-  結果は `.review-reports/latest.json` に記録され、pre-push フックが検査する
+  結果は作業ツリーごとの git のディレクトリの中の `ai-review/latest.json`（`$(git rev-parse --absolute-git-dir)/ai-review/latest.json`）に記録され、pre-push フックが検査する
   （未レビュー・`block`・`must-address` の未処理・昇格未実施・v2 の記録（`fix`）・全体のレビューを 2 回（最初と最後）経ていない差分レビューの記録は push 拒否）。
 - **クラウドセッションでは `/ai-review` が使えない**（Codex CLI 不在）。クラウドは `/code-review` 単独で確認し、
   正式なゲートはローカルで `/ai-review` を通してから push する。
