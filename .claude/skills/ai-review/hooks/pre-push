@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ai-review-managed-hook
+# ai-review-record: git-dir
 # /ai-review v3 pre-push ゲート（ブロック型）
 #
-# .review-reports/latest.json を検査し、以下なら push を拒否する:
+# 記録（作業ツリーごとの git のディレクトリの中の ai-review/latest.json）を検査し、以下なら push を拒否する:
 #   1. latest.json が無い、または head_sha が今の HEAD と一致しない（レビュー未実施／古い）
 #   2. verdict が block
 #   3. verdict が must-address で、must_address の項目に未処理のものがある。処理済みとみなすのは次のどちらか:
@@ -97,9 +98,16 @@ if reports_untrusted; then
   fi
   exit 1
 fi
-f=".review-reports/latest.json"
+# 記録は、チェックアウトや reset では作れない git のディレクトリの中に置く（scripts/reports-guard.sh の record_file の写し）。
+# 作業ツリーの .review-reports/latest.json は読まない（祖先のコミットに仕込まれた偽の記録が、reset の後に残りうる）
+gd="$(git rev-parse --absolute-git-dir 2>/dev/null)" || { echo "[ai-review] 拒否: git のディレクトリを確かめられません" >&2; exit 1; }
+f="$gd/ai-review/latest.json"
 if [ ! -f "$f" ]; then
-  echo "[ai-review] 拒否: $f がありません。push 前に /ai-review を実行してください" >&2
+  if [ -f .review-reports/latest.json ]; then
+    echo "[ai-review] 拒否: 記録の置き場所が変わりました（作業ツリーの .review-reports から git のディレクトリの中へ）。/ai-review を回し直してください" >&2
+  else
+    echo "[ai-review] 拒否: 記録（${f}）がありません。push 前に /ai-review を実行してください" >&2
+  fi
   exit 1
 fi
 
@@ -179,7 +187,7 @@ if [ "$verdict" = "must-address" ]; then
   fi
   # -I（isolated）で cwd を sys.path に入れず PYTHON* も無視し、cwd もリポジトリの外にする。
   # リポジトリ直下の json.py などを import させない（フックは全リポジトリで動く。2026-09-23 に実測）
-  left="$(cd / && "$py" -I - "$repo_root/$f" "$head_sha" <<'PY'
+  left="$(cd / && "$py" -I - "$f" "$head_sha" <<'PY'
 import json, sys
 try:
     rec = json.load(open(sys.argv[1], encoding="utf-8"))

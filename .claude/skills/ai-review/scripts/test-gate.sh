@@ -33,7 +33,8 @@ run(){ AI_REVIEW_DRY_RUN=1 bash "$RR" "$@" >/dev/null 2>&1; }
 # pre-push を今の HEAD の push として呼ぶ。終了コードを返す
 hook(){ printf 'refs/heads/feat %s refs/heads/feat %s\n' "$(git rev-parse HEAD)" 0000000000000000000000000000000000000000 | AI_REVIEW_ALLOW_DRY=1 bash "$HOOK" origin "$T/origin.git" >"$T/hook.out" 2>&1; }
 hook_nodry(){ printf 'refs/heads/feat %s refs/heads/feat %s\n' "$(git rev-parse HEAD)" 0000000000000000000000000000000000000000 | bash "$HOOK" origin "$T/origin.git" >"$T/hook.out" 2>&1; }
-latest=".review-reports/latest.json"
+latest="$(git rev-parse --absolute-git-dir)/ai-review/latest.json"   # 記録は git のディレクトリの中（reports-guard.sh の record_file）
+export LATEST="$latest"
 # 制御端末なしで動かす（端末から test-gate.sh を回しても /dev/tty の入力待ちで止まらないように）
 notty(){ python3 -c 'import subprocess,sys; sys.exit(subprocess.run(sys.argv[1:], stdin=subprocess.DEVNULL, start_new_session=True).returncode)' "$@"; }
 # 疑似端末で 1 行を打ち込んでコマンドを動かす（人の承認のテスト用。macOS の script はパイプの入力を渡せない）
@@ -618,7 +619,7 @@ rec13 .review-reports/x1 --verdict must-address --items "$T/x1-items.json" >/dev
 bash "$RI" --id R1 --fixed --note "直した（嘘）" >/dev/null 2>&1
 echo 3 >> f2.js; G commit -qam unrelated
 run --out .review-reports/x2; rec13 .review-reports/x2 --verdict pass >/dev/null 2>&1
-python3 -c 'import json,sys; d=json.load(open(".review-reports/latest.json")); s={i["id"]: i["status"] for i in d["must_address"]}; sys.exit(0 if s.get("carry-R1") == "open" and "prev-R1" not in s else 1)' && ok "差分に入っていないファイルの fixed は open のまま引き継ぐ（R5）" || ng "x2: $(python3 -c 'import json; print([(i["id"], i["status"]) for i in json.load(open(".review-reports/latest.json"))["must_address"]])')"
+python3 -c 'import json,sys; d=json.load(open(__import__("os").environ["LATEST"])); s={i["id"]: i["status"] for i in d["must_address"]}; sys.exit(0 if s.get("carry-R1") == "open" and "prev-R1" not in s else 1)' && ok "差分に入っていないファイルの fixed は open のまま引き継ぐ（R5）" || ng "x2: $(python3 -c 'import json; print([(i["id"], i["status"]) for i in json.load(open(__import__("os").environ["LATEST"]))["must_address"]])')"
 G checkout -q -b fx2 origin/main
 echo 1 > g1.js; echo 2 > g2.js; G add g1.js g2.js; G commit -qm big
 run --out .review-reports/y1
@@ -627,12 +628,12 @@ rec13 .review-reports/y1 --verdict must-address --items "$T/y1-items.json" >/dev
 bash "$RI" --id R1 --fixed --note "直した" >/dev/null 2>&1
 echo 3 >> g1.js; G commit -qam fixg1
 run --out .review-reports/y2; rec13 .review-reports/y2 --verdict pass >/dev/null 2>&1
-python3 -c 'import json,sys; d=json.load(open(".review-reports/latest.json")); s={i["id"]: i["status"] for i in d["must_address"]}; sys.exit(0 if s.get("prev-R1") == "fixed" else 1)' && ok "差分に入ったファイルの fixed は再レビュー済みにする（R5）" || ng "y2: $(python3 -c 'import json; print([(i["id"], i["status"]) for i in json.load(open(".review-reports/latest.json"))["must_address"]])')"
+python3 -c 'import json,sys; d=json.load(open(__import__("os").environ["LATEST"])); s={i["id"]: i["status"] for i in d["must_address"]}; sys.exit(0 if s.get("prev-R1") == "fixed" else 1)' && ok "差分に入ったファイルの fixed は再レビュー済みにする（R5）" || ng "y2: $(python3 -c 'import json; print([(i["id"], i["status"]) for i in json.load(open(__import__("os").environ["LATEST"]))["must_address"]])')"
 rm -rf .ai-review
 
 echo "13e. 差分レビューの穴（2 回目の /ai-review の指摘 S1〜S7）"
 mkdir -p .ai-review; printf 'max_files 1\n' > .ai-review/escalation-rules.local.txt
-ids(){ python3 -c 'import json; print(" ".join("%s:%s" % (i["id"], i["status"]) for i in json.load(open(".review-reports/latest.json"))["must_address"]))'; }
+ids(){ python3 -c 'import json; print(" ".join("%s:%s" % (i["id"], i["status"]) for i in json.load(open(__import__("os").environ["LATEST"]))["must_address"]))'; }
 mk(){ printf '[{"id":"%s","source":"own-review","file":"%s","line":1,"tier":"%s","severity":"Medium","category":"%s","summary":"%s","high_risk":%s}]' "$1" "$2" "$3" "$4" "$5" "$6" > "$T/$1-$7.json"; echo "$T/$1-$7.json"; }
 # S1: 深掘りを済ませていない記録とは、チェーンをつながない
 G checkout -q -b e1 origin/main
@@ -666,7 +667,7 @@ echo 3 >> n2.js; G commit -qam e4b
 run --out .review-reports/e4b; rec13 .review-reports/e4b --verdict must-address --items "$(mk R1 n2.js MUST-ADDRESS correctness second false b)" >/dev/null 2>&1
 echo 4 >> n2.js; G commit -qam e4c
 run --out .review-reports/e4c; rec13 .review-reports/e4c --verdict pass >/dev/null 2>&1
-python3 -c 'import json,sys; d=json.load(open(".review-reports/latest.json")); x=[i["id"] for i in d["must_address"]]; sys.exit(0 if len(x)==len(set(x))==2 else 1)' && ok "引き継ぐ項目の ID は一意（S4）" || ng "S4: $(ids)"
+python3 -c 'import json,sys; d=json.load(open(__import__("os").environ["LATEST"])); x=[i["id"] for i in d["must_address"]]; sys.exit(0 if len(x)==len(set(x))==2 else 1)' && ok "引き継ぐ項目の ID は一意（S4）" || ng "S4: $(ids)"
 # S5: 差分レビューで引き継ぐ accepted は、検証と人の承認をやり直す
 G checkout -q -b e5 origin/main
 echo 1 > q1.js; echo 2 > q2.js; G add q1.js q2.js; G commit -qm big
@@ -674,7 +675,7 @@ run --out .review-reports/e5a; rec13 .review-reports/e5a --verdict must-address 
 bash "$RI" --id A1 --accepted --reason "呼び出し元 q2.js で弾いている" >/dev/null 2>&1; bash "$RI" --id A1 --verifier upheld --note ok >/dev/null 2>&1
 echo 3 >> q2.js; G commit -qam e5b
 run --out .review-reports/e5b; rec13 .review-reports/e5b --verdict pass >/dev/null 2>&1
-python3 -c 'import json,sys; d=json.load(open(".review-reports/latest.json")); a=[i for i in d["must_address"] if i["id"].endswith("A1")][0]; sys.exit(0 if a.get("verifier") == "pending" else 1)' && ok "引き継いだ accepted は検証をやり直す（S5）" || ng "S5: $(python3 -c 'import json; print(json.load(open(".review-reports/latest.json"))["must_address"])')"
+python3 -c 'import json,sys; d=json.load(open(__import__("os").environ["LATEST"])); a=[i for i in d["must_address"] if i["id"].endswith("A1")][0]; sys.exit(0 if a.get("verifier") == "pending" else 1)' && ok "引き継いだ accepted は検証をやり直す（S5）" || ng "S5: $(python3 -c 'import json; print(json.load(open(__import__("os").environ["LATEST"]))["must_address"])')"
 # S6: BLOCK・高リスク・セキュリティの fixed の次は全体レビュー
 G checkout -q -b e6 origin/main
 echo 1 > r1.js; echo 2 > r2.js; G add r1.js r2.js; G commit -qm big
@@ -720,7 +721,7 @@ run --out .review-reports/t4a; rec13 .review-reports/t4a --verdict must-address 
 printf 'max_files 1\npath ^hr/\n' > .ai-review/escalation-rules.local.txt
 echo 3 >> u9.js; G commit -qam t4b
 run --out .review-reports/t4b; rec13 .review-reports/t4b --verdict pass >/dev/null 2>&1
-python3 -c 'import json,sys; d=json.load(open(".review-reports/latest.json")); h=[i for i in d["must_address"] if i["id"].endswith("H1")][0]; sys.exit(0 if h["high_risk"] is True else 1)' && ok "引き継いだ項目に、後から足した path ルールの高リスクを当てる（T4）" || ng "T4: $(ids)"
+python3 -c 'import json,sys; d=json.load(open(__import__("os").environ["LATEST"])); h=[i for i in d["must_address"] if i["id"].endswith("H1")][0]; sys.exit(0 if h["high_risk"] is True else 1)' && ok "引き継いだ項目に、後から足した path ルールの高リスクを当てる（T4）" || ng "T4: $(ids)"
 printf 'max_files 1\n' > .ai-review/escalation-rules.local.txt
 # T5: 日本語名のファイルを消して直した fixed も照合できる
 G checkout -q -b f5 origin/main
@@ -825,15 +826,15 @@ run --out .review-reports/v1a; rec13 .review-reports/v1a --verdict pass >/dev/nu
 G checkout -q -b h1b origin/main
 echo 1 > o3.js; echo 2 > o4.js; G add o3.js o4.js; G commit -qm other
 run --out .review-reports/v1b; rec13 .review-reports/v1b --verdict pass >/dev/null 2>&1
-python3 -c 'import json,sys; d=json.load(open(".review-reports/latest.json")); p=d.get("_previous"); p=json.loads(p) if isinstance(p,str) and p else p; sys.exit(0 if not p else 1)' && ok "つながらなかった前の記録は _previous に残さない（V1）" || ng "V1: $(python3 -c 'import json; print(json.load(open(".review-reports/latest.json")).get("_previous"))' | head -c 200)"
+python3 -c 'import json,sys; d=json.load(open(__import__("os").environ["LATEST"])); p=d.get("_previous"); p=json.loads(p) if isinstance(p,str) and p else p; sys.exit(0 if not p else 1)' && ok "つながらなかった前の記録は _previous に残さない（V1）" || ng "V1: $(python3 -c 'import json; print(json.load(open(__import__("os").environ["LATEST"])).get("_previous"))' | head -c 200)"
 # V2: _previous の中のキーを pre-push が拾わない
 G checkout -q -b h2 origin/main
 echo 1 > o5.js; echo 2 > o6.js; G add o5.js o6.js; G commit -qm big
 run --out .review-reports/v2a; rec13 .review-reports/v2a --verdict pass >/dev/null 2>&1
 echo 3 >> o5.js; G commit -qam v2b
 run --out .review-reports/v2b; rec13 .review-reports/v2b --verdict pass >/dev/null 2>&1
-python3 -c 'import json,sys; d=json.load(open(".review-reports/latest.json")); sys.exit(0 if isinstance(d.get("_previous"), str) and json.loads(d["_previous"]).get("head_sha") else 1)' && ok "_previous は JSON の文字列で持つ（入れ子のキーを pre-push の grep が拾わない）（V2）" || ng "V2: $(python3 -c 'import json; print(type(json.load(open(".review-reports/latest.json")).get("_previous")))')"
-! grep -q '^    "dry_run"\|^  "_previous": {' .review-reports/latest.json && ok "記録の入れ子に dry_run のキーが出ない（V2）" || ng "V2: 入れ子のキー"
+python3 -c 'import json,sys; d=json.load(open(__import__("os").environ["LATEST"])); sys.exit(0 if isinstance(d.get("_previous"), str) and json.loads(d["_previous"]).get("head_sha") else 1)' && ok "_previous は JSON の文字列で持つ（入れ子のキーを pre-push の grep が拾わない）（V2）" || ng "V2: $(python3 -c 'import json; print(type(json.load(open(__import__("os").environ["LATEST"])).get("_previous")))')"
+! grep -q '^    "dry_run"\|^  "_previous": {' "$latest" && ok "記録の入れ子に dry_run のキーが出ない（V2）" || ng "V2: 入れ子のキー"
 # V3: サブディレクトリから相対パスで記録しても、同じ run だと分かる
 mkdir -p sub; ( cd sub && bash "$RG" --verdict pass --escalate false --escalation-done false --report ../.review-reports/v2b/report.md >"$T/rg.out" 2>&1 ) && ok "サブディレクトリから相対パスで同じ run を記録し直せる（V3）" || ng "V3: $(cat "$T/rg.out")"
 rm -rf .ai-review sub
@@ -846,7 +847,7 @@ echo 1 > a91.js; echo 2 > a92.js; G add a91.js a92.js; G commit -qm big
 run --out .review-reports/w1a; rec13 .review-reports/w1a --verdict pass >/dev/null 2>&1
 python3 - <<'PY'
 import json
-p = ".review-reports/latest.json"; d = json.load(open(p))
+p = __import__("os").environ["LATEST"]; d = json.load(open(p))
 d["sources"] = {"_none": {"level": "block", "detail": "全部未取得"}}; d["verdict"] = "block"
 json.dump(d, open(p, "w"))
 PY

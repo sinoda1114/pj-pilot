@@ -13,7 +13,7 @@ push 前の**唯一のゲート**。レビュー本体は書かない。同梱�
 ## 厳守事項
 
 - ソースコード・設定ファイル・lockfile を変更しない。コミット・push・PR 作成をしない（MUST-ADDRESS を「直す」のは、このスキルの外で作業中の AI が行う。§3.9）。
-- 書き込みは `.review-reports/` 配下のみ（レポート md/html、`items.json`、`latest.json`、各実行の生出力）。
+- 書き込みは `.review-reports/` 配下（レポート md/html、`items.json`、各実行の生出力）と、ゲートの記録 `latest.json`（作業ツリーごとの git のディレクトリの中の `ai-review/latest.json`。`record-gate.sh` と `resolve-item.sh` が書く）のみ。
 - レビュー観点をこのスキルの手順に書き足さない。観点は `prompts/` の 2 本と Codex 純正 review が持つ。自分は**突合・記録・片づけの手順**だけを行う。
 - モデルと effort はスクリプト内で固定（§1.1）。セッションのモデルに関わらず固定値で走る。環境変数でも変えられない。
 - 自前観点は**スラッシュコマンドとして入れない**。`run-reviews.sh` が本文を `claude -p` に直接渡す。`~/.claude/commands/` の有無やユーザーのコマンド上書きに影響されない。
@@ -30,7 +30,7 @@ push 前の**唯一のゲート**。レビュー本体は書かない。同梱�
 | `scripts/escalation-check.sh` | 昇格判定（パス／追加行／規模／秘密情報）。JSON を返す。モデル不使用 |
 | `scripts/run-reviews.sh` | レビュアーの並列起動、判定表の検査と 1 回の再実行。`--security` で own-security 単独、`--deep` で 5 本 |
 | `scripts/gate.py` | 結論の下限（floor）・判定表の検査・記録・項目の処理の下請け（python3 標準ライブラリのみ） |
-| `scripts/record-gate.sh` | `latest.json` を書く（pre-push フックが読む） |
+| `scripts/record-gate.sh` | `latest.json` を書く（pre-push フックが読む）。置き場所は `$(git rev-parse --absolute-git-dir)/ai-review/latest.json`（チェックアウトや reset では作れない場所。作業ツリーの `.review-reports` に置くと、祖先のコミットに仕込んだ偽の記録が残りうる） |
 | `scripts/resolve-item.sh` | MUST-ADDRESS の 1 件の処理（fixed / accepted / 検証結果 / 人の承認）を記録する |
 | `escalation-rules.txt` | 昇格パターンの既定。path ルールは「高リスク」の判定にも使う。プロジェクト追記は `.ai-review/escalation-rules.local.txt` |
 | `hooks/pre-push` | ブロック型フック（`~/.git-hooks/pre-push` に配置して使う） |
@@ -267,7 +267,7 @@ pre{background:var(--code-bg);color:var(--code-fg);padding:14px 16px;border-radi
 @media print{body{background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact;}.card{break-inside:avoid;}}
 ```
 
-## 5. `latest.json`（pre-push フックが読む）
+## 5. `latest.json`（pre-push フックが読む。置き場所は git のディレクトリの中の `ai-review/latest.json`）
 ```json
 {
   "version": 3, "head_sha": "…", "branch": "feat/x", "mode": "branch",
