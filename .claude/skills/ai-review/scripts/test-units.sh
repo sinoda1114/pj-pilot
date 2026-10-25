@@ -136,5 +136,71 @@ printf '100644 %s\t-\377\n100644 %s\t.review-reports/latest.json\n' "$bl" "$bl" 
 # 一時ファイルの名前は予測できない
 ! grep -q '".tmp"' "$RR" && grep -q 'mkstemp' "$RR" && ok "run-reviews.sh の一時ファイルは mkstemp で作る" || ng "予測できる .tmp が残っている"
 
+echo "5. 記録の置き場所（.git の中）"
+rec_json(){ printf '{"version": 3, "head_sha": "%s", "branch": "main", "mode": "branch", "verdict": "pass", "scope": "full", "full_count": 1, "escalate": false, "escalation_done": false, "skipped_by_user": false}\n' "$1"; }
+mkrepo "$T/r11"; h11="$(git -C "$T/r11" rev-parse HEAD)"
+mkdir -p "$T/r11/.review-reports"; rec_json "$h11" > "$T/r11/.review-reports/latest.json"   # 作業ツリーにだけある記録（チェックアウトや reset で作れる）
+(cd "$T/r11" && printf 'refs/heads/main %s refs/heads/main %s\n' "$h11" $zero | bash "$HOOK" origin x > "$T/r11.out" 2>&1); rc=$?
+[ $rc -ne 0 ] && grep -q '置き場所' "$T/r11.out" && ok "作業ツリーにだけある記録では通さず、置き場所が変わったと知らせる" || ng "rc=$rc $(head -1 "$T/r11.out")"
+gd11="$(git -C "$T/r11" rev-parse --absolute-git-dir)"; mkdir -p "$gd11/ai-review"; rec_json "$h11" > "$gd11/ai-review/latest.json"
+(cd "$T/r11" && printf 'refs/heads/main %s refs/heads/main %s\n' "$h11" $zero | bash "$HOOK" origin x > "$T/r11b.out" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok ".git の中の記録で通す" || ng "rc=$rc $(head -2 "$T/r11b.out")"
+( . "$here/reports-guard.sh"; [ "$(record_file "$T/r11")" = "$gd11/ai-review/latest.json" ] ) && ok "record_file は作業ツリーごとの .git の中を指す" || ng "record_file"
+
+# 古い版のフック（記録を作業ツリーから読む）があれば、置き換えを知らせる。古い場所に写しは置かず、残った記録は消す
+# （写しを置くと、作業ツリーに仕込んだ偽の記録で古いフックを通せる抜け道が残る）
+OLDHOOK='#!/usr/bin/env bash\n# ai-review-managed-hook\nf=".review-reports/latest.json"\n'
+oldrec(){ mkdir -p "$T/r12/.review-reports"; rec_json x > "$T/r12/.review-reports/latest.json"; }
+warn12(){ ( cd "$T/r12" && . "$here/reports-guard.sh"; warn_old_hook ) 2> "$1"; }
+mkrepo "$T/r12"; mkdir -p "$T/r12hooks"
+printf '%b' "$OLDHOOK" > "$T/r12hooks/pre-push"; chmod +x "$T/r12hooks/pre-push"
+git -C "$T/r12" config core.hooksPath "$T/r12hooks"
+oldrec; warn12 "$T/r12.err"
+[ ! -e "$T/r12/.review-reports/latest.json" ] && grep -q '正しく働きません' "$T/r12.err" && grep -q '置き換えて' "$T/r12.err" && ! grep -q '消すか' "$T/r12.err" && ok "効いているフックが古い版なら、置き換えを知らせ（削除は勧めない）、古い場所の記録を消す" || ng "効いているフック: $(cat "$T/r12.err")"
+# 新しい版のフックだけなら何も言わない。古い場所に残った記録は、それでも消す
+cp "$HOOK" "$T/r12hooks/pre-push"; oldrec; warn12 "$T/r12b.err"
+[ ! -e "$T/r12/.review-reports/latest.json" ] && [ ! -s "$T/r12b.err" ] && ok "新しい版のフックなら何も言わず、古い場所の記録は消す" || ng "新しい版: $(cat "$T/r12b.err")"
+# リポジトリのフック（.git/hooks/pre-push）が古い版でも知らせる（呼び継ぐ仕組みは新しいフックとは限らない）
+printf '%b' "$OLDHOOK" > "$T/r12/.git/hooks/pre-push"; chmod +x "$T/r12/.git/hooks/pre-push"
+mkdir -p "$T/r12other"; printf '#!/bin/sh\nexit 0\n' > "$T/r12other/pre-push"; chmod +x "$T/r12other/pre-push"
+git -C "$T/r12" config core.hooksPath "$T/r12other"; warn12 "$T/r12c.err"
+grep -q '正しく働きません' "$T/r12c.err" && ok "効いているフックが別物でも、リポジトリのフックの古い版を知らせる" || ng "リポジトリのフック: $(cat "$T/r12c.err")"
+# 実行権が無くても知らせる（後で実行権を付けると、古いフックのまま効きはじめる）
+chmod -x "$T/r12/.git/hooks/pre-push"; warn12 "$T/r12d.err"
+grep -q '正しく働きません' "$T/r12d.err" && ok "実行権の無い古いフックも知らせる" || ng "実行権なし: $(cat "$T/r12d.err")"
+rm -f "$T/r12/.git/hooks/pre-push"; git -C "$T/r12" config core.hooksPath "$T/r12hooks"
+# 古い場所の記録を消せなければ、黙らずに知らせる
+mkdir -p "$T/r12/.review-reports/latest.json"   # ディレクトリは rm -f で消えない（root でも同じ）
+warn12 "$T/r12e.err"
+grep -q '消せませんでした' "$T/r12e.err" && ok "古い場所の記録を消せなければ知らせる" || ng "消せなかったのに黙った: $(cat "$T/r12e.err")"
+rm -rf "$T/r12/.review-reports"
+# .review-reports がシンボリックリンクなら、リンク先の記録を消さない
+mkdir -p "$T/r12link"; rec_json x > "$T/r12link/latest.json"; ln -s "$T/r12link" "$T/r12/.review-reports"
+warn12 /dev/null
+[ -f "$T/r12link/latest.json" ] && ok ".review-reports がリンクなら、リンク先を消さない" || ng "リンク先の記録を消した"
+rm -f "$T/r12/.review-reports"
+# 書き手は古い場所に写しを置かない
+grep -q 'record_compat_copy' "$here/record-gate.sh" "$here/resolve-item.sh" "$here/reports-guard.sh"; [ $? -eq 1 ] && ok "互換の写しの仕組みが残っていない" || ng "record_compat_copy が残っている"
+grep -q '# ai-review-record: git-dir' "$HOOK" && ok "フックに版の目印がある" || ng "フックに版の目印が無い"
+! grep -q 'tmp="\$f.tmp.\$\$"' "$here/resolve-item.sh" && ok "resolve-item.sh の一時ファイルは mktemp で作る" || ng "予測できる一時ファイル名が残っている"
+
+echo "13. UTF-8 のロケールで、全角文字の直前の変数を変数名の一部として読まない"
+# bash は UTF-8 のロケールで `$f（` の全角文字のバイトまで変数名として読み、set -u の下で落ちる
+bad="$(LC_ALL=C grep -nE '\$[A-Za-z_][A-Za-z0-9_]*[^ -~]' "$here"/*.sh "$HOOK" | grep -vE ':[0-9]+:[[:space:]]*#')"
+[ -z "$bad" ] && ok "スクリプトに、全角文字の直前の裸の \$変数が無い" || ng "全角文字の直前の裸の \$変数: $bad"
+# 入っている UTF-8 のロケールを使う（入っていない名前を渡すと bash は警告して続け、検査が素通りになるため）
+u8=""
+for l in ja_JP.UTF-8 en_US.UTF-8 C.UTF-8 C.utf8 en_US.utf8; do
+  locale -a 2>/dev/null | grep -qixF "$l" && { u8="$l"; break; }
+done
+if [ -z "$u8" ]; then
+  echo "  SKIP UTF-8 のロケールが入っていないため、resolve-item.sh の実行の検査を飛ばす（静的検査は上で実施）"
+else
+  mkdir -p "$T/r13" && G -C "$T/r13" init -q && G -C "$T/r13" commit -q --allow-empty -m init
+  out="$(cd "$T/r13" && LC_ALL="$u8" bash "$here/resolve-item.sh" --id R1 --fixed --note x 2>&1)"
+  printf '%s' "$out" | grep -q '記録（.*）がありません' && ! printf '%s' "$out" | grep -qE '未割り当て|unbound' \
+    && ok "記録が無いとき、resolve-item.sh は UTF-8 のロケール（${u8}）でも理由を出して止まる" || ng "resolve-item.sh（${u8}）: $out"
+fi
+
 echo "== PASS $pass / FAIL $fail =="
 [ $fail -eq 0 ]

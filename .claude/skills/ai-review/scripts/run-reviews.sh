@@ -14,7 +14,7 @@
 #     --incremental  規模に関係なく、前回の記録とつながっていれば差分レビューにする（/ai-review-fix の 2 周目以降）
 #
 # 範囲の自動選択（branch モード。DESIGN-v3.md §10）: 差分が大きい（escalation-rules の max_files /
-# max_added を超える）ブランチでは、前回の記録（.review-reports/latest.json）とつながる 2 周目以降、
+# max_added を超える）ブランチでは、前回の記録（git のディレクトリの中の ai-review/latest.json）とつながる 2 周目以降、
 # 前回レビューした SHA から HEAD までの差分だけをレビューする。差分レビューが片づいたら最後に 1 回
 # 全体を見る。2 周目以降は規模による昇格をしない。決めた範囲は <out>/scope.json に残し、--security は
 # 同じ run の scope.json に従う。
@@ -161,12 +161,13 @@ if [ "$mode" != "local" ] && [ $base_given -eq 0 ] && [ -n "$base" ]; then
     : # 同じ run の通常のレビューが決めた範囲に従う
   elif [ $security -eq 0 ]; then
     plan_mb="$(git merge-base "$base" HEAD 2>/dev/null || true)"
-    prev_head="$(sed -n 's/.*"head_sha": *"\([0-9a-f]*\)".*/\1/p' "$plan_top/.review-reports/latest.json" 2>/dev/null | head -1)"
+    plan_rec="$(record_file "$plan_top")" || plan_rec=/nonexistent/latest.json
+    prev_head="$(sed -n 's/.*"head_sha": *"\([0-9a-f]*\)".*/\1/p' "$plan_rec" 2>/dev/null | head -1)"
     prev_anc=false
     [ -n "$prev_head" ] && git merge-base --is-ancestor "$prev_head" HEAD 2>/dev/null && prev_anc=true
     read -r plan_files plan_added < <(git diff --numstat "${plan_mb:-HEAD}" HEAD 2>/dev/null |
       awk '{n++} $1 ~ /^[0-9]+$/ {s+=$1} END {print n+0, s+0}')
-    plan_args=(plan --latest "$plan_top/.review-reports/latest.json" --head "$(git rev-parse HEAD)"
+    plan_args=(plan --latest "$plan_rec" --head "$(git rev-parse HEAD)"
       --branch "$(git rev-parse --abbrev-ref HEAD)" --merge-base "$plan_mb" --prev-ancestor "$prev_anc" --prev-head "$prev_head"
       --files "${plan_files:-0}" --added "${plan_added:-0}"
       --rules "$script_dir/../escalation-rules.txt" --rules "$plan_top/.ai-review/escalation-rules.local.txt")

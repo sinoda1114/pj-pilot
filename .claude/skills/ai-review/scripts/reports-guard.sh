@@ -8,6 +8,42 @@
 #   grep -q は途中で読むのをやめ、pipefail の下で上流が SIGPIPE で失敗扱いになるので、-c で最後まで読む。
 #   既知の限界: ファイルシステムの上での別名（同じ実体になる綴りの違う名前）の確認は、索引と作業ツリーだけで行う
 #   （チェックアウトしていないコミットのツリーの名前は、ファイルシステムで比べられない）。
+# record_file [<リポジトリの中のパス>]: ゲートが信用する記録（latest.json）の場所。作業ツリーごとの git のディレクトリの中
+#   （.git/ai-review/latest.json。作業ツリーの別のディレクトリなら .git/worktrees/<名前>/ai-review/latest.json）。
+#   チェックアウトや reset では作れない場所に置く（作業ツリーの .review-reports だと、祖先のコミットに仕込んだ偽の記録が
+#   reset の後に追跡されないファイルとして残り、それでゲートを通せた）。レビューの出力（run-*）は .review-reports に置く。
+record_file() {
+  local gd; gd="$(git -C "${1:-.}" rev-parse --absolute-git-dir 2>/dev/null)" && [ -n "$gd" ] || return 1
+  printf '%s/ai-review/latest.json\n' "$gd"
+}
+
+# warn_old_hook: 記録を書いた後に呼ぶ。古い場所（作業ツリーの .review-reports/latest.json）に残った記録を消し、
+#   古い版の ai-review のフック（記録をそこから読む）があれば置き換えを知らせる。古い場所に写しは置かない
+#   （置くと、作業ツリーに仕込んだ偽の記録で古いフックを通せる抜け道が残る）。どう振る舞うかはほかのフックとの
+#   組み合わせで変わるので、案内では動きを断言しない
+warn_old_hook() {
+  local top hp hk
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+  hp="$(git config --type=path --includes --get core.hooksPath 2>/dev/null)"   # ~ や ~user は git 自身に展開させる
+  [ -n "$hp" ] || hp="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/hooks"
+  case "$hp" in /*) ;; *) hp="$top/$hp" ;; esac
+  # 効いている置き場所と、リポジトリのフック（呼び継がれうる）の両方を見る。実行権は問わない（後で付けると効きはじめる）
+  for hk in "$hp/pre-push" "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/hooks/pre-push"; do
+    if [ -f "$hk" ] && grep -qxF '# ai-review-managed-hook' "$hk" && ! grep -qxF '# ai-review-record: git-dir' "$hk"; then
+      echo "注意: 古い版の pre-push フック（${hk}）があります。記録を作業ツリーの .review-reports から読む版なので、ゲートが正しく働きません。スキルの hooks/pre-push で置き換えてください（グローバルの置き場所のフックなら、install.sh の実行し直しでも置き換わります）" >&2
+      break
+    fi
+  done
+  # 古い場所に残った記録（偽の記録かもしれない）は、新しいフックは読まないので、いつも消す。
+  # .review-reports がリンクなら、リンク先のファイルを消さない（呼び出し元の検査に頼らない）
+  [ -L "$top/.review-reports" ] && return 0
+  rm -f "$top/.review-reports/latest.json" 2>/dev/null
+  if [ -e "$top/.review-reports/latest.json" ] || [ -L "$top/.review-reports/latest.json" ]; then
+    echo "注意: 古い場所の記録（$top/.review-reports/latest.json）を消せませんでした。古いフックはこれを信用するので、手で消してください" >&2
+  fi
+  return 0
+}
+
 # reports_unreadable <リポジトリのルート> <コミット>: コミットはあるのに、そのツリーを読めなければ 0（読めないものは信用しない）
 reports_unreadable() {
   if ! git -C "$1" rev-parse -q --verify "$2" >/dev/null 2>&1; then
