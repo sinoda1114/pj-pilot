@@ -26,13 +26,16 @@ hook_args=("$@")
 # ゲートを通したら、リポジトリ自身の .git/hooks/pre-push を呼び継ぐ（グローバルの core.hooksPath にすると、
 # git はリポジトリの .git/hooks を使わなくなるため。ここで呼び継がないと、各リポジトリの検査が黙って止まる）
 pass() {
-  local h; h="$(git rev-parse --git-common-dir 2>/dev/null)/hooks/pre-push"
+  # git のディレクトリを確かめられなければ呼び継がない（空のまま "/hooks/pre-push" を組み立てて実行しない）
+  local gd; gd="$(git rev-parse --git-common-dir 2>/dev/null)" && [ -n "$gd" ] || exit 0
+  local h="$gd/hooks/pre-push"
   if [ -x "$h" ] && ! [ "$h" -ef "$0" ]; then
     # パイプではなく一時ファイルで渡す（呼び継いだフックが入力を読まずに終わると、pipefail で失敗と誤読するため）
-    local in; in="$(mktemp "${TMPDIR:-/tmp}/ai-review-prepush.XXXXXX")" || exit 1
-    printf '%s\n' "$input" > "$in"
-    "$h" ${hook_args[@]+"${hook_args[@]}"} < "$in"; local rc=$?
-    rm -f "$in"; exit $rc
+    pass_in="$(mktemp "${TMPDIR:-/tmp}/ai-review-prepush.XXXXXX")" || exit 1
+    trap 'rm -f "$pass_in"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM   # シグナルで止まっても一時ファイルを残さない
+    [ -n "$input" ] && printf '%s\n' "$input" > "$pass_in"   # 入力が空なら空のまま渡す（空行を 1 行渡さない）
+    "$h" ${hook_args[@]+"${hook_args[@]}"} < "$pass_in"; local rc=$?
+    exit $rc
   fi
   exit 0
 }
@@ -45,7 +48,7 @@ pass() {
 skill_dir="__AI_REVIEW_SKILL_DIR__"
 case "$skill_dir" in __*) skill_dir="$HOME/.claude/skills/ai-review" ;; esac
 
-repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || pass   # bare リポジトリなど。作業ツリーが無くても呼び継ぐ
 cd "$repo_root" || exit 0
 
 # push 対象の sha を全て集める。削除（全ゼロ）は対象外。
@@ -61,9 +64,37 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 done <<< "$input"
 [ -z "$(printf '%s' "$push_shas" | tr -d '[:space:]')" ] && pass
 
-# レビュー対象のコミットに .review-reports が入っていれば、その記録は信用しない
-if [ -L .review-reports ] || [ "$(git ls-files -z 2>/dev/null | tr '\0' '\n' | grep -ciE '(^|/)\.review-reports(/|$)')" != "0" ]; then
-  echo "[ai-review] 拒否: .review-reports がシンボリックリンクか、git で追跡されています。記録を信用できません" >&2
+# レビュー対象のコミットに .review-reports が入っていれば、その記録は信用しない。
+# 中身は scripts/reports-guard.sh の写し（このフックは ~/.git-hooks に単独で置かれ、スキルのファイルを読めないため。直すときは両方直す）。
+# 索引だけでなく、push するコミットのツリーも見る（git rm --cached で外しただけのコミット済みの .review-reports を見落とさない）
+reports_unreadable() {  # コミットのツリーを読めなければ信用しない（git の失敗を「追跡されていない」と読まない）
+  git rev-parse -q --verify "$1^{commit}" >/dev/null 2>&1 || return 0
+  ! git ls-tree -r --name-only "$1" >/dev/null 2>&1
+}
+reports_why=""
+reports_untrusted() {
+  local -x LC_ALL=C   # 言語設定に左右されない（不正なバイトの名前で tr などが途中で止まらない）
+  git ls-files -z >/dev/null 2>&1 || { reports_why=unreadable; return 0; }   # 索引を読めなければ信用しない
+  local pat='(^|/)\.review-reports(/|$)' c
+  [ -L .review-reports ] && return 0
+  [ "$(git ls-files -z 2>/dev/null | tr '\0' '\n' | grep -ciE "$pat")" != "0" ] && return 0
+  # ファイルシステムの上で .review-reports と同じ実体になる別名で追跡されているもの（大文字小文字・Unicode の同一視）
+  local first
+  while IFS= read -r first; do
+    [ -n "$first" ] && [ "$first" != ".review-reports" ] && [ "./$first" -ef "./.review-reports" ] && return 0
+  done < <(git ls-files -z 2>/dev/null | tr '\0' '\n' | cut -d/ -f1 | LC_ALL=C sort -u)
+  for c in $push_shas; do
+    reports_unreadable "$c" && { reports_why=unreadable; return 0; }
+    [ "$(git ls-tree -r -z --name-only "$c" 2>/dev/null | tr '\0' '\n' | grep -ciE "$pat")" != "0" ] && return 0
+  done
+  return 1
+}
+if reports_untrusted; then
+  if [ "$reports_why" = "unreadable" ]; then
+    echo "[ai-review] 拒否: push するコミットのツリーを読めないので、.review-reports が含まれていないかを確かめられません（git fsck で確かめてください）" >&2
+  else
+    echo "[ai-review] 拒否: .review-reports がシンボリックリンクか、git で追跡されています。記録を信用できません" >&2
+  fi
   exit 1
 fi
 f=".review-reports/latest.json"

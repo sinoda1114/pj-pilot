@@ -34,7 +34,8 @@ push 前の**唯一のゲート**。レビュー本体は書かない。同梱�
 | `scripts/resolve-item.sh` | MUST-ADDRESS の 1 件の処理（fixed / accepted / 検証結果 / 人の承認）を記録する |
 | `escalation-rules.txt` | 昇格パターンの既定。path ルールは「高リスク」の判定にも使う。プロジェクト追記は `.ai-review/escalation-rules.local.txt` |
 | `hooks/pre-push` | ブロック型フック（`~/.git-hooks/pre-push` に配置して使う） |
-| `scripts/test-gate.sh` / `scripts/test-isolation.sh` | 回帰テスト（ダミー実行とフィクスチャのみ。実モデルを呼ばない） |
+| `scripts/reports-guard.sh` | `.review-reports` を記録の置き場所として信用できるかの検査（3 つのスクリプトが読み込む。`hooks/pre-push` は単独で置かれるので写しを持つ） |
+| `scripts/test-gate.sh` / `scripts/test-isolation.sh` / `scripts/test-units.sh` | 回帰テスト（ダミー実行とフィクスチャのみ。実モデルを呼ばない。`test-units.sh` は端のケースの小さなテストで数秒で終わる） |
 | `scripts/probe-permissions.sh` | 実機の確認（実モデルを少し呼ぶ）。レビュアーの許可・拒否・設定の隔離が CLI で効いているかを、印のファイルの有無で確かめる。CLI の更新時と起動引数の変更時に回す |
 
 `$SKILL` = このスキルのディレクトリ（スキルを読み込んだときに示される Base directory。既定の導入先は `~/.claude/skills/ai-review`）として以下に記す。ユーザーにコマンドを示すときは、`$SKILL` を実際のパスに置き換える。
@@ -289,11 +290,13 @@ pre{background:var(--code-bg);color:var(--code-fg);padding:14px 16px;border-radi
 フックの拒否条件: `head_sha ≠ push 対象 SHA` / `verdict = block` / `verdict = must-address` で処理済みでない項目がある / `mode ≠ branch` / `escalate かつ 未実施かつ 未スキップ` / verdict が不正（v2 の `fix` を含む）/ `scope = incremental` かつ `full_count < 2`（最後の全体レビューがまだ）。処理済みとは「`fixed` で再レビュー済み（`re_reviewed_sha` = レビュー済み SHA）」または「`accepted` かつ `verifier = upheld` かつ（高リスクでない、または `approved_by = human`）」。緊急回避は `AI_REVIEW_BYPASS=1 git push`、コードでないリポジトリは `git config ai-review.skip true`。
 
 ## 6. pre-push フック導入（初回のみ案内）
-配布リポジトリの `install.sh` で入れるよう案内する（前提の確認、スキルの導入、フックへのスキルの場所の埋め込み、既存のフックとの競合の確認を行う）。スクリプトを使えないときの手作業:
+配布リポジトリの `install.sh` で入れるよう案内する（前提の確認、スキルの導入、フックへのスキルの場所の埋め込み、既存のフックとの競合の確認を行う）。プラグインでスキルを入れた場合は `install.sh --hook-only`（フックだけ）。スクリプトを使えないときの手作業（`$SKILL` は英数字・`/._-` と空白だけのパスであること。`|` や `"` などを含むと、埋め込みが壊れる）:
 ```bash
+mkdir -p ~/.git-hooks
 sed "s|__AI_REVIEW_SKILL_DIR__|$SKILL|" "$SKILL/hooks/pre-push" > ~/.git-hooks/pre-push && chmod +x ~/.git-hooks/pre-push
 git config --global core.hooksPath ~/.git-hooks
 ```
+すでにグローバルの `core.hooksPath` が別の場所にあるときは、`~/.git-hooks` ではなくその場所に置く（`git config --global --includes --get core.hooksPath` で確かめる）。
 既存の `~/.git-hooks/pre-push` がある場合は上書き前に内容を見せ、ユーザーの了解を得る。このフックは、ゲートを通した後に各リポジトリの `.git/hooks/pre-push` を呼び継ぐ。v2 のフックのままだと `must-address` を不正な verdict として拒むので、v3 に入れ替えるよう案内する。
 
 ## 7. エラーハンドリング

@@ -97,11 +97,10 @@ done
 # 出力がリポジトリの外や意図しない場所に書かれる。レビュー対象を信頼しない前提なので、見つけたら止める
 guard_reports_dir() {
   local top="$1"
-  # どの階層でも、大文字小文字を区別せずに見る（macOS の既定のファイルシステムは大文字小文字を区別しない）。
-  # grep -q は途中で読むのをやめ、pipefail の下で上流が SIGPIPE で失敗扱いになるので、-c で最後まで読む
-  if [ -L "$top/.review-reports" ] || [ "$(git -C "$top" ls-files -z 2>/dev/null | tr '\0' '\n' | grep -ciE '(^|/)\.review-reports(/|$)')" != "0" ]; then
-    echo "リポジトリの .review-reports がシンボリックリンクか、git で追跡されています（サブディレクトリ・大文字小文字違いを含む）。レビューの出力を書けません。" >&2
-    echo "レビュー対象のコミットに .review-reports が含まれていないか確かめてください。" >&2
+  # 検査の中身は reports-guard.sh（索引に加えて、コミットのツリーも見る）
+  . "$script_dir/reports-guard.sh" || { echo "同梱の reports-guard.sh を読み込めません。.review-reports を確かめられないので止めます" >&2; exit 1; }   # 読めないまま検査を素通りしない
+  if reports_untrusted "$top"; then
+    reports_untrusted_message
     exit 1
   fi
 }
@@ -383,28 +382,28 @@ fi
 # 見落とすと、そのファイルがある作業場所で Codex を起動してしまう（Codex は差分の外のファイルも読める）
 if [ -n "${since:-}" ] && [ -n "${full_base:-}" ] && [ -s "$out/escalation.json" ] && [ "${AI_REVIEW_DRY_RUN:-0}" != "1" -o "${AI_REVIEW_DRY_ESCALATION:-}" = "real" ]; then
   if ( cd "$repo_top" && "$script_dir/escalation-check.sh" --base "$full_base" --no-size ) > "$out/escalation-full.json" 2>> "$status"; then
-    "$py" -I -c 'import json,sys
+    "$py" -I -c 'import json,os,pathlib,sys,tempfile
 d = json.load(open(sys.argv[1], encoding="utf-8")); f = json.load(open(sys.argv[2], encoding="utf-8"))
 sp = list(dict.fromkeys((d.get("secret_paths") or []) + (f.get("secret_paths") or [])))
 d["secret_paths"] = sp
-json.dump(d, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False)' "$out/escalation.json" "$out/escalation-full.json" 2>> "$status" ||
+fd, t = tempfile.mkstemp(dir=os.path.dirname(sys.argv[1]) or "."); os.close(fd); pathlib.Path(t).write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8"); os.replace(t, sys.argv[1])' "$out/escalation.json" "$out/escalation-full.json" 2>> "$status" ||
       { echo "WARN: ブランチ全体の秘密情報の判定を足せなかった（Codex を起動しない）" >> "$status"; secret_full_failed=1
-        "$py" -I -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["secret_paths"]="?"; json.dump(d, open(p,"w"))' "$out/escalation.json"; }
+        "$py" -I -c 'import json,os,pathlib,sys,tempfile; p=sys.argv[1]; d=json.load(open(p)); d["secret_paths"]="?"; fd, t = tempfile.mkstemp(dir=os.path.dirname(p) or "."); os.close(fd); pathlib.Path(t).write_text(json.dumps(d)); os.replace(t, p)' "$out/escalation.json"; }
   else
     echo "WARN: ブランチ全体の秘密情報の判定が失敗した（Codex を起動しない）" >> "$status"; secret_full_failed=1
-    "$py" -I -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["secret_paths"]="?"; json.dump(d, open(p,"w"))' "$out/escalation.json"
+    "$py" -I -c 'import json,os,pathlib,sys,tempfile; p=sys.argv[1]; d=json.load(open(p)); d["secret_paths"]="?"; fd, t = tempfile.mkstemp(dir=os.path.dirname(p) or "."); os.close(fd); pathlib.Path(t).write_text(json.dumps(d)); os.replace(t, p)' "$out/escalation.json"
   fi
 fi
 # 1 周目で深掘りが加わったブランチの最後の全体レビュー（scope.json の force_escalation）は、深掘りを必ず加える
 if [ $security -eq 0 ] && [ -s "$out/escalation.json" ] && [ -s "$out/scope.json" ]; then
-  "$py" -I -c 'import json,sys
+  "$py" -I -c 'import json,os,pathlib,sys,tempfile
 sc = json.load(open(sys.argv[1], encoding="utf-8"))
 if sc.get("force_escalation") is True:
     p = sys.argv[2]; d = json.load(open(p, encoding="utf-8"))
     d["escalate"] = True
     why = {"size": "F:size:ブランチ全体が規模の上限を超えたが、まだ規模による深掘りをしていない"}
     d["reasons"] = (d.get("reasons") or []) + [why.get(sc.get("force_reason"), "F:chain:1 周目で深掘りが加わったブランチの最後の全体レビュー")]
-    json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False)' "$out/scope.json" "$out/escalation.json" 2>> "$status" ||
+    fd, t = tempfile.mkstemp(dir=os.path.dirname(p) or "."); os.close(fd); pathlib.Path(t).write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8"); os.replace(t, p)' "$out/scope.json" "$out/escalation.json" 2>> "$status" ||
     echo "WARN: 最後の全体レビューの深掘りを escalation.json に書けなかった" >> "$status"
 fi
 # 秘密情報のファイルが差分にあれば、外部モデル（Codex）を起動しない（エージェントの --no-codex に頼らない）。

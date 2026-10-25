@@ -581,7 +581,10 @@ def is_ancestor(sha, head):
     if not (isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha)):
         return False
     import subprocess
-    return subprocess.run(["git", "merge-base", "--is-ancestor", sha, head], capture_output=True).returncode == 0
+    try:
+        return subprocess.run(["git", "merge-base", "--is-ancestor", sha, head], capture_output=True).returncode == 0
+    except OSError:  # git が見つからないなど。確かめられなければ祖先とみなさない
+        return False
 
 
 def branch_record(prev):
@@ -727,10 +730,11 @@ def cmd_record(a):
                 size_skipped = json.load(f).get("size_skipped") is True
         except (OSError, ValueError, AttributeError):
             size_skipped = False
-        if scope["scope"] == "incremental" and heavy_fixed(prev, path_rules(a.rules or [])):
+        heavy = heavy_fixed(prev, path_rules(a.rules or [])) if scope["scope"] == "incremental" else []  # 判定と表示で同じ結果を使う
+        if heavy:
             die("前回の記録に、差分レビューでは確かめきれない fixed（%s）があります。"
                 "run-reviews.sh --full で全体をレビューしてから記録してください"
-                % ", ".join(str(it.get("id")) for it in heavy_fixed(prev, path_rules(a.rules or [])))[:200])
+                % ", ".join(str(it.get("id")) for it in heavy)[:200])
         if scope["scope"] == "incremental" and block_not_carried(prev):
             die("前回の記録の結論は block ですが、引き継げる BLOCK の項目がありません（差分レビューでは block を"
                 "引き継げません）。run-reviews.sh --full で全体をレビューしてから記録してください")
@@ -982,12 +986,17 @@ def cmd_check(a):
             isinstance(rec.get("full_count"), int) and rec["full_count"] >= FULL_REVIEWS_BEFORE_PUSH):
         print("-\t-\t-\t差分レビューの記録です。push の前に最後の全体レビューが要る"
               "（未処理の項目があれば先に片づける。片づいていれば /ai-review の再実行で全体を見る）")
-        sys.exit(1)
+        need_full = True
+    else:
+        need_full = False
     if rec.get("verdict") == "must-address" and not (rec.get("must_address") or []):
         # pre-push と同じ基準: must-address なのに項目が無い記録は壊れている
         print("-\t-\t-\tverdict=must-address なのに項目が無い（記録が壊れている）")
         sys.exit(1)
     for it in bad:
+        if not isinstance(it, dict):  # 項目の形が壊れている（表示で落ちない）
+            print("-\t-\t-\t項目の形が不正（記録が壊れている）")
+            continue
         why = {
             "open": "未処理",
             "fixed": "fixed と記録済み。commit して /ai-review を再実行する",
@@ -998,7 +1007,7 @@ def cmd_check(a):
             else:
                 why = "高リスクのため人の承認が要る"
         print(safe("%s\t%s\t%s:%s\t%s" % (it.get("id"), it.get("tier"), it.get("file"), it.get("line"), why)))
-    sys.exit(1 if bad else 0)
+    sys.exit(1 if bad or need_full else 0)  # 全体レビューの不足と未処理の項目は、両方出してから止める
 
 
 # ---------------------------------------------------------------- 1 件の処理
