@@ -534,6 +534,59 @@ def read_json(path):
     return d if isinstance(d, dict) else {}
 
 
+def write_json_atomic(path, data):
+    """同じディレクトリの一時ファイルに書いてから置き換える。失敗したら一時ファイルを消す"""
+    import pathlib
+    import tempfile
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".")
+    os.close(fd)
+    try:
+        pathlib.Path(tmp).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def merge_secret_paths(esc, full):
+    """escalation.json に、ブランチ全体の判定（full）の秘密情報のパスを足す。full が無ければ "?"（Codex を起動しない）"""
+    # 読めなければ例外で落とす（黙って空にすると、秘密情報が無いことにされ Codex を起動してしまう）
+    with open(esc, encoding="utf-8") as fh:
+        d = json.load(fh)
+    if full:
+        with open(full, encoding="utf-8") as fh:
+            f = json.load(fh)
+        d["secret_paths"] = list(dict.fromkeys((d.get("secret_paths") or []) + (f.get("secret_paths") or [])))
+    else:
+        d["secret_paths"] = "?"
+    write_json_atomic(esc, d)
+
+
+def cmd_merge_secrets(a):
+    merge_secret_paths(a.esc, a.full)
+
+
+def force_escalation(scope, esc):
+    """scope.json の force_escalation が真なら、escalation.json の escalate を真にして理由を足す"""
+    with open(scope, encoding="utf-8") as fh:
+        sc = json.load(fh)
+    if sc.get("force_escalation") is not True:
+        return
+    with open(esc, encoding="utf-8") as fh:
+        d = json.load(fh)
+    d["escalate"] = True
+    why = {"size": "F:size:ブランチ全体が規模の上限を超えたが、まだ規模による深掘りをしていない"}
+    d["reasons"] = (d.get("reasons") or []) + [why.get(sc.get("force_reason"), "F:chain:1 周目で深掘りが加わったブランチの最後の全体レビュー")]
+    write_json_atomic(esc, d)
+
+
+def cmd_force_escalation(a):
+    force_escalation(a.scope, a.esc)
+
+
 def carried_over(it):
     """前回の記録の項目が、次の周の記録に持ち越されるか（再レビュー済みの fixed だけは持ち越さない）。
     cmd_record の引き継ぎと carries_block の両方がこれを使う（片方だけ変えると block が消える穴が戻る）"""
@@ -1155,6 +1208,16 @@ def main():
     pl.add_argument("--dry", action="store_true")
     pl.add_argument("--incremental", action="store_true", help="規模に関係なく、つながっていれば差分レビューにする（/ai-review-fix の 2 周目以降）")
     pl.set_defaults(fn=cmd_plan)
+
+    ms = sp.add_parser("merge-secrets")
+    ms.add_argument("--esc", required=True)
+    ms.add_argument("--full", default="")
+    ms.set_defaults(fn=cmd_merge_secrets)
+
+    fe = sp.add_parser("force-escalation")
+    fe.add_argument("--scope", required=True)
+    fe.add_argument("--esc", required=True)
+    fe.set_defaults(fn=cmd_force_escalation)
 
     c = sp.add_parser("check")
     c.add_argument("--latest", required=True)
