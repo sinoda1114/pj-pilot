@@ -115,9 +115,7 @@ print(d.get("since") or "" if d.get("scope") == "incremental" else "")' "$report
       # 差分レビューの記録は、効いている pre-push が差分レビューの決まり（全体レビュー 2 回 = full_count）を知っているときだけ
       # 受け付ける。古いフックはこの決まりを知らないので、全体を 1 回しか経ていない記録でも push を通してしまう
       if [ -n "$inc_since" ]; then
-        hp="$(git config --get core.hooksPath 2>/dev/null || true)"
-        [ -n "$hp" ] || hp="$(git rev-parse --git-path hooks 2>/dev/null)"
-        case "$hp" in "~/"*) hp="$HOME/${hp#\~/}" ;; esac
+        hp="$(hooks_dir)" || { echo "効いている pre-push の置き場所を確かめられません" >&2; exit 1; }   # reports-guard.sh
         # 古い ai-review のフックかは、実行権に関係なく先に見る（実行権を付けると、古いフックのまま効きはじめるため）
         if [ -f "$hp/pre-push" ] && grep -q 'ai-review-managed-hook' "$hp/pre-push" && ! grep -q 'full_count' "$hp/pre-push"; then
           echo "効いている pre-push（$hp/pre-push）が古い ai-review のフックで、差分レビューの記録を正しく検査できません。" >&2

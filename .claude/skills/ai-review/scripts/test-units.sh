@@ -134,7 +134,7 @@ printf '100644 %s\t-\377\n100644 %s\t.review-reports/latest.json\n' "$bl" "$bl" 
 (cd "$T/r10" && printf 'refs/heads/main %s refs/heads/main %s\n' "$(git rev-parse HEAD)" $zero | LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 bash "$HOOK" origin x > "$T/r10.out" 2>&1); rc=$?
 [ $rc -ne 0 ] && grep -q '追跡されています' "$T/r10.out" && ok "pre-push も不正なバイトの名前で素通りしない" || ng "pre-push: rc=$rc $(head -1 "$T/r10.out")"
 # 一時ファイルの名前は予測できない
-! grep -q '".tmp"' "$RR" && grep -q 'mkstemp' "$RR" && ok "run-reviews.sh の一時ファイルは mkstemp で作る" || ng "予測できる .tmp が残っている"
+! grep -q '".tmp"' "$RR" && { grep -q 'mkstemp' "$RR" || grep -q 'gate.py" merge-secrets' "$RR"; } && grep -q 'mkstemp' "$GP" && ok "run-reviews.sh の一時ファイルは mkstemp で作る（gate.py の書き換えを含む）" || ng "予測できる .tmp が残っている"
 
 echo "5. 記録の置き場所（.git の中）"
 rec_json(){ printf '{"version": 3, "head_sha": "%s", "branch": "main", "mode": "branch", "verdict": "pass", "scope": "full", "full_count": 1, "escalate": false, "escalation_done": false, "skipped_by_user": false}\n' "$1"; }
@@ -202,5 +202,88 @@ else
     && ok "記録が無いとき、resolve-item.sh は UTF-8 のロケール（${u8}）でも理由を出して止まる" || ng "resolve-item.sh（${u8}）: $out"
 fi
 
+echo "14. Issue #9 の残り"
+# 索引を読めないときは、コミットのツリーではなく索引を読めないと知らせる
+mkrepo "$T/r14"; printf 'garbage' > "$T/r14/.git/index"
+( . "$here/reports-guard.sh"; reports_untrusted "$T/r14" && reports_untrusted_message ) 2> "$T/r14.err"
+grep -q '索引' "$T/r14.err" && ! grep -q 'コミットのツリーを読めません' "$T/r14.err" && ok "索引を読めないときは索引を読めないと知らせる" || ng "索引: $(cat "$T/r14.err")"
+# --path-format の無い古い git（2.31 より前）でも、壊れた HEAD の ref を「生まれる前のブランチ」と取り違えない
+mkdir -p "$T/oldgit"; realgit="$(command -v git)"
+printf '#!/bin/sh\nfor a in "$@"; do case "$a" in --path-format*) echo "fatal: unknown option $a" >&2; exit 129 ;; esac; done\nexec "%s" "$@"\n' "$realgit" > "$T/oldgit/git"; chmod +x "$T/oldgit/git"
+! grep -q -e '--path-format' "$here/reports-guard.sh" "$here/../hooks/pre-push" && ok "reports-guard.sh と pre-push は --path-format を使わない" || ng "--path-format が残っている: $(grep -n -e '--path-format' "$here/reports-guard.sh" "$here/../hooks/pre-push")"
+# 古い git でも、リポジトリのフック（.git/hooks/pre-push）の古い版を見つける
+mkrepo "$T/r14c"; printf '%b' "$OLDHOOK" > "$T/r14c/.git/hooks/pre-push"; chmod +x "$T/r14c/.git/hooks/pre-push"
+( cd "$T/r14c" && PATH="$T/oldgit:$PATH" GIT_CONFIG_GLOBAL="$T/r12empty"; export PATH GIT_CONFIG_GLOBAL; . "$here/reports-guard.sh"; warn_old_hook ) 2> "$T/r14c.err"
+grep -q '正しく働きません' "$T/r14c.err" && ok "古い git でも、リポジトリのフックの古い版を見つける" || ng "古い git: $(cat "$T/r14c.err")"
+# 効いているフックの置き場所は 1 つの関数（hooks_dir）で決める。相対パスはルートから、~/ は HOME から
+mkrepo "$T/r14d"; git -C "$T/r14d" config core.hooksPath hk
+( cd "$T/r14d" && . "$here/reports-guard.sh"; d="$(hooks_dir)"; [ "$d" -ef "$T/r14d/hk" ] || [ "$d" = "$T/r14d/hk" ] || [ "$d" = "$(cd "$T/r14d" && pwd -P)/hk" ] ) && ok "hooks_dir は相対パスをルートから解く" || ng "hooks_dir（相対）: $(cd "$T/r14d" && . "$here/reports-guard.sh"; hooks_dir)"
+git -C "$T/r14d" config core.hooksPath '~/hk'
+( cd "$T/r14d" && . "$here/reports-guard.sh"; [ "$(hooks_dir)" = "$HOME/hk" ] ) && ok "hooks_dir は ~/ を HOME から解く" || ng "hooks_dir（~）"
+! grep -q 'git config --get core.hooksPath' "$here/record-gate.sh" && grep -q 'hooks_dir' "$here/record-gate.sh" && ok "record-gate.sh も hooks_dir を使う" || ng "record-gate.sh が自前で置き場所を探している"
+# コミット 1 つにつき ls-tree -r は 1 回だけ
+mkdir -p "$T/countgit"; printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = ls-tree ] && echo x >> "%s/lstree.count"; done\nexec "%s" "$@"\n' "$T" "$realgit" > "$T/countgit/git"; chmod +x "$T/countgit/git"
+mkrepo "$T/r14e"; rm -f "$T/lstree.count"
+( PATH="$T/countgit:$PATH"; . "$here/reports-guard.sh"; reports_untrusted "$T/r14e" HEAD ) >/dev/null 2>&1
+[ "$(wc -l < "$T/lstree.count" 2>/dev/null | tr -d ' ')" = "1" ] && ok "コミット 1 つにつき ls-tree は 1 回" || ng "ls-tree の回数: $(wc -l < "$T/lstree.count" 2>/dev/null)"
+# 作業ツリーが分からず bare でもないときは、ゲートを飛ばさずに止める（bare なら呼び継ぐ）
+mkrepo "$T/r14f"; h14f="$(git -C "$T/r14f" rev-parse HEAD)"
+(cd "$T/r14f/.git" && printf 'refs/heads/main %s refs/heads/main %s\n' "$h14f" $zero | bash "$HOOK" origin x > "$T/r14f.out" 2>&1); rc=$?
+[ $rc -ne 0 ] && ok "作業ツリーが分からず bare でもなければ止める" || ng "作業ツリー不明で通した: $(head -2 "$T/r14f.out")"
+git clone -q --bare "$T/r14f" "$T/r14g.git"
+(cd "$T/r14g.git" && printf 'refs/heads/main %s refs/heads/main %s\n' "$h14f" $zero | bash "$HOOK" origin x > "$T/r14g.out" 2>&1); rc=$?
+[ $rc -eq 0 ] && ok "bare リポジトリなら通す（呼び継ぐ）" || ng "bare で止めた: $(head -2 "$T/r14g.out")"
+# escalation.json の書き換えに失敗しても、一時ファイルを残さない
+mkdir -p "$T/r14h"; echo '{"escalate": false, "secret_paths": []}' > "$T/r14h/escalation.json"; echo '{"secret_paths": [".env"]}' > "$T/r14h/full.json"
+out="$(cd "$T" && python3 -I - "$here" "$T/r14h" 2>&1 <<'PY'
+import sys, pathlib
+sys.path.insert(0, sys.argv[1])
+import gate
+def boom(self, *a, **k):
+    raise OSError("disk full")
+pathlib.Path.write_text = boom
+try:
+    gate.merge_secret_paths(sys.argv[2] + "/escalation.json", sys.argv[2] + "/full.json")
+except OSError:
+    pass
+PY
+)"
+[ "$(ls "$T/r14h" | wc -l | tr -d ' ')" = "2" ] && ok "escalation.json の書き換えに失敗しても一時ファイルを残さない" || ng "一時ファイルが残った: $(ls "$T/r14h") $out"
+python3 -I - "$here" "$T/r14h" >/dev/null 2>&1 <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import gate
+gate.merge_secret_paths(sys.argv[2] + "/escalation.json", None)
+PY
+grep -q '"secret_paths": "?"' "$T/r14h/escalation.json" && ok "全体の判定が無いときは secret_paths を ? にする" || ng "secret_paths: $(cat "$T/r14h/escalation.json")"
+# 全体の判定が読めなければ、黙って足さずに失敗する（呼び出し元が ? に倒して Codex を止める）
+echo '{"escalate": false, "secret_paths": []}' > "$T/r14h/escalation.json"; printf 'broken' > "$T/r14h/full.json"
+python3 -I "$GP" merge-secrets --esc "$T/r14h/escalation.json" --full "$T/r14h/full.json" >/dev/null 2>&1; rc=$?
+[ $rc -ne 0 ] && grep -q '"secret_paths": \[\]' "$T/r14h/escalation.json" && ok "全体の判定が読めなければ失敗し、escalation.json を変えない" || ng "壊れた全体の判定: rc=$rc $(cat "$T/r14h/escalation.json")"
+# force-escalation は escalate を真にし、理由を足す
+echo '{"force_escalation": true, "force_reason": "size"}' > "$T/r14h/scope.json"
+python3 -I "$GP" force-escalation --scope "$T/r14h/scope.json" --esc "$T/r14h/escalation.json" && grep -q '"escalate": true' "$T/r14h/escalation.json" && grep -q 'F:size' "$T/r14h/escalation.json" && [ "$(ls "$T/r14h" | wc -l | tr -d ' ')" = "3" ] && ok "force-escalation は escalate を真にして理由を足す（一時ファイルを残さない）" || ng "force-escalation: $(cat "$T/r14h/escalation.json"; ls "$T/r14h")"
+# record-gate.sh を通しで動かす: 古いフックが入っていれば知らせ、作業ツリーの偽の記録を消すので、古いフックのままでは push が止まる
+mkrepo "$T/r14o"; git clone -q --bare "$T/r14o" "$T/r14o.git"; git clone -q "$T/r14o.git" "$T/r14p"
+git -C "$T/r14p" remote set-head origin -a >/dev/null 2>&1
+mkdir -p "$T/r14phooks"
+# 古いフックの最初の検査（記録が無ければ止める）だけを写したもの
+printf '#!/usr/bin/env bash\n# ai-review-managed-hook\nf=".review-reports/latest.json"\n[ -f "$f" ] || exit 1\nexit 0\n' > "$T/r14phooks/pre-push"; chmod +x "$T/r14phooks/pre-push"
+git -C "$T/r14p" config core.hooksPath "$T/r14phooks"
+mkdir -p "$T/r14p/.review-reports"; rec_json "$(git -C "$T/r14p" rev-parse HEAD)" > "$T/r14p/.review-reports/latest.json"   # 仕込まれた偽の記録
+(cd "$T/r14p" && GIT_CONFIG_GLOBAL="$T/r12empty" bash "$here/record-gate.sh" --verdict pass --escalate false --escalation-done false --no-diff --reason "差分なし" > "$T/r14p.out" 2>&1); rc=$?
+(cd "$T/r14p" && bash "$T/r14phooks/pre-push" origin x < /dev/null); hrc=$?
+[ $rc -eq 0 ] && grep -q '正しく働きません' "$T/r14p.out" && [ ! -e "$T/r14p/.review-reports/latest.json" ] && [ -f "$(git -C "$T/r14p" rev-parse --absolute-git-dir)/ai-review/latest.json" ] && [ $hrc -ne 0 ] \
+  && ok "record-gate.sh は古いフックを知らせ、偽の記録を消し、古いフックのままでは push が止まる" || ng "通し: rc=$rc hook=$hrc $(tail -3 "$T/r14p.out")"
+# 初回コミットの前（生まれる前のブランチ）は、ツリーを読めないとは扱わない（--local のレビューを止めない）
+mkdir -p "$T/r14q" && git -C "$T/r14q" init -q -b main
+( . "$here/reports-guard.sh"; ! reports_untrusted "$T/r14q" HEAD ) && ok "初回コミットの前のリポジトリは信用する（ツリーを読めないと扱わない）" || ng "初回コミットの前を止めた: $( . "$here/reports-guard.sh"; reports_untrusted "$T/r14q" HEAD; echo "$REPORTS_WHY")"
+# --type=path の無い古い git（2.18 より前）でも、core.hooksPath を読む
+mkdir -p "$T/oldgit2"
+printf '#!/bin/sh\nfor a in "$@"; do case "$a" in --type*) echo "error: unknown option $a" >&2; exit 129 ;; esac; done\nexec "%s" "$@"\n' "$realgit" > "$T/oldgit2/git"; chmod +x "$T/oldgit2/git"
+mkrepo "$T/r14r"; git -C "$T/r14r" config core.hooksPath "$T/r14rhooks"
+( cd "$T/r14r" && PATH="$T/oldgit2:$PATH"; . "$here/reports-guard.sh"; [ "$(hooks_dir)" = "$T/r14rhooks" ] ) && ok "--type=path が無い git でも core.hooksPath を読む" || ng "古い git の hooks_dir: $(cd "$T/r14r" && PATH="$T/oldgit2:$PATH"; . "$here/reports-guard.sh"; hooks_dir)"
+# pre-push は作業ツリーのルートに移れなければ止める
+! grep -q 'cd "$repo_root" || exit 0' "$HOOK" && ok "pre-push はルートに移れなければ止める" || ng "pre-push がルートに移れないときに通す"
 echo "== PASS $pass / FAIL $fail =="
 [ $fail -eq 0 ]
