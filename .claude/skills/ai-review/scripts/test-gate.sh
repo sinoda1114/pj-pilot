@@ -108,7 +108,7 @@ for nm in own-review codex-review own-security own-review-fable codex-astra; do
   grep -q "^started $nm " "$st" && grep -q "^ok $nm " "$st" || bad="$bad $nm"
 done
 [ -z "$bad" ] && ok "5 本とも起動・完了（own-review / codex-review / own-security / own-review-fable / codex-astra）" || ng "起動・完了していない:$bad"
-grep -q -- '--model claude-fable-5-1 --effort high' .review-reports/r3/own-review-fable.md && ok "2 人目の Claude は claude-fable-5-1 / high" || ng "fable のモデル"
+grep -q -- '--model claude-fable-5-2 --effort high' .review-reports/r3/own-review-fable.md && ok "2 人目の Claude は claude-fable-5-2 / high" || ng "fable のモデル"
 grep -q -- '-m gpt-6-astra -c model_reasoning_effort="high"' .review-reports/r3/codex-astra.md && ok "2 人目の Codex は gpt-6-astra / high" || ng "astra のモデル"
 grep -q '^# セキュリティの深掘りレビュー' .review-reports/r3/own-security.prompt.md && ok "own-security は深掘りのプロンプト" || ng "own-security のプロンプト"
 [ -f .review-reports/r3/deep.flag ] && ok "deep の印を残す" || ng "deep.flag なし"

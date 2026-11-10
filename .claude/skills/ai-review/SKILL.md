@@ -47,7 +47,7 @@ push 前の**唯一のゲート**。レビュー本体は書かない。同梱�
 | `own-review` | `prompts/own-review.md` | claude-opus-5-5 / high | 毎回 |
 | `codex-review` | `codex exec review`（純正。独自の指示は渡さない） | gpt-6.1-sol / high | 毎回 |
 | `own-security` | `prompts/own-security.md` | claude-opus-5-5 / high | 昇格時（`--security`）と `--deep` |
-| `own-review-fable` | `prompts/own-review.md` | claude-fable-5-1 / high | `--deep` |
+| `own-review-fable` | `prompts/own-review.md` | claude-fable-5-2 / high | `--deep` |
 | `codex-astra` | `codex exec review`（純正） | gpt-6-astra / high | `--deep` |
 
 Claude 側の道具は `Read,Grep,Glob,読み取り系の git サブコマンド（diff / show / log / status / ls-files / rev-parse / blame / merge-base / cat-file）,Task,Agent,TodoWrite` に限り、`--permission-mode dontAsk` でそれ以外（書き込み・ネットワーク・git 以外のコマンド）を拒否させる。`--setting-sources "" --safe-mode --strict-mcp-config` でユーザー・プロジェクトの設定（allow ルール・フック・CLAUDE.md）と MCP を読ませない（レビュー対象に入った `.claude/settings.json` のフックや、ユーザーの allow ルールで許可リストを迂回させないため）。パッケージのインストールやネットワークへのアクセスはしない（プロンプトにも書いてある）。Codex は read-only サンドボックス。
@@ -58,7 +58,7 @@ Claude 側の道具は `Read,Grep,Glob,読み取り系の git サブコマンド
 |---|---|---|
 | `/ai-review`（既定） | `origin/HEAD`（merge-base）から HEAD までの**コミット済み差分** | push 前の必須ゲート |
 | `/ai-review --local` | 未コミット差分（staged + unstaged + untracked） | 途中の任意チェック。何度でも。push の根拠にはならない |
-| `/ai-review --deep` | 既定と同じ | 強化版。own-security（常に）・own-review × Fable 5.1・Codex × Astra を通常の 2 本と並列で足す（計 5 本）。`--local` とも併用できる |
+| `/ai-review --deep` | 既定と同じ | 強化版。own-security（常に）・own-review × Fable 5.2・Codex × Astra を通常の 2 本と並列で足す（計 5 本）。`--local` とも併用できる |
 | `/ai-review --security` | 既定と同じ | 深掘りだけを明示的に回す（通常は昇格で自動）。単独では push の根拠にならない（記録には通常の 2 本の `reviewed_sha.review` が要る） |
 | `/ai-review --full` | 既定と同じ | 差分レビューにせず、必ずブランチ全体を見る |
 

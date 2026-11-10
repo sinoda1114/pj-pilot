@@ -8,7 +8,7 @@
 #     --local        未コミット差分モード（自前観点は未コミットの変更を読む。Codex は --uncommitted）
 #     --no-codex     Codex を起動しない（秘密情報が差分に含まれる場合など）
 #     --security     通常の 2 本の代わりに own-security（セキュリティの深掘り）だけを起動する（昇格用）
-#     --deep         強化版。通常の 2 本に加えて own-security・own-review（Fable 5.1）・Codex（Astra）を並列で起動する
+#     --deep         強化版。通常の 2 本に加えて own-security・own-review（Fable 5.2）・Codex（Astra）を並列で起動する
 #     --timeout      各コマンドの上限秒（既定 900）
 #     --full         差分レビューにせず、必ず全体（origin/HEAD...HEAD）をレビューする
 #     --incremental  規模に関係なく、前回の記録とつながっていれば差分レビューにする（/ai-review-fix の 2 周目以降）
@@ -23,7 +23,7 @@
 #   own-review        prompts/own-review.md   × claude-opus-5-5 / high   （毎回）
 #   codex-review      codex exec review 純正  × gpt-6.1-sol     / high   （毎回。独自の指示は渡さない）
 #   own-security      prompts/own-security.md × claude-opus-5-5 / high   （--security と --deep）
-#   own-review-fable  prompts/own-review.md   × claude-fable-5-1 / high  （--deep）
+#   own-review-fable  prompts/own-review.md   × claude-fable-5-2 / high  （--deep）
 #   codex-astra       codex exec review 純正  × gpt-6-astra     / high   （--deep）
 #   モデル・effort は固定（環境変数で上書きできない。変えるならこのファイルを直す）。
 #   Opus 5.5 は CLI 2.1.280 以上が必要。既定 effort が medium なので --effort high を明示し続けること。
@@ -46,7 +46,7 @@
 set -uo pipefail
 
 CLAUDE_MODEL="claude-opus-5-5"
-CLAUDE_DEEP_MODEL="claude-fable-5-1"
+CLAUDE_DEEP_MODEL="claude-fable-5-2"
 CLAUDE_EFFORT="high"
 CODEX_MODEL="gpt-6.1-sol"
 CODEX_DEEP_MODEL="gpt-6-astra"
