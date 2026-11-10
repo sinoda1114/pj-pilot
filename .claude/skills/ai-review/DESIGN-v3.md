@@ -13,7 +13,7 @@
 | Claude 側（毎回） | `/code-review`（ユーザー環境の ECC 版が組み込み版を上書き）× Opus 5.5 | 同梱の自前観点 `prompts/own-review.md`（v5）× Opus 5.5 / high。本文を `claude -p` に直接渡す |
 | Codex 側（毎回） | 純正 `codex exec review` × gpt-6-sol / high | **変更なし** |
 | 昇格 | 公式 `/security-review` × Opus 5.5 | 同梱の `prompts/own-security.md` × Opus 5.5 / high |
-| 強化版 | なし | `--deep`: own-security（常に）＋ own-review × Fable 5.1 ＋ Codex × Astra を通常の 2 本と並列（計 5 本） |
+| 強化版 | なし | `--deep`: own-security（常に）＋ own-review × Fable 5.2 ＋ Codex × Astra を通常の 2 本と並列（計 5 本） |
 | 結論 | pass / fix / block（fix は push 可） | BLOCK / MUST-ADDRESS / PASS。MUST-ADDRESS は 1 件ずつ片づけるまで push 不可（C 案） |
 | 突合 | 片方だけの指摘は裁定せず検証し、不採用にもできた | 和集合。指摘を落とさず、直さないものは理由を記録して別のサブエージェントが検証する |
 | 判定表の欠け | 検査なし | 機械で検査し 1 回だけ再実行。埋まらなければ「判定なし（要確認）」= MUST-ADDRESS |
@@ -56,7 +56,7 @@
 | own-review | `prompts/own-review.md` | claude-opus-5-5 / high | 毎回 |
 | codex-review | `codex exec review`（純正） | gpt-6.1-sol / high | 毎回 |
 | own-security | `prompts/own-security.md` | claude-opus-5-5 / high | 昇格・`--security`・`--deep` |
-| own-review-fable | `prompts/own-review.md` | claude-fable-5-1 / high | `--deep` |
+| own-review-fable | `prompts/own-review.md` | claude-fable-5-2 / high | `--deep` |
 | codex-astra | `codex exec review`（純正） | gpt-6-astra / high | `--deep` |
 
 - モデルと effort は `run-reviews.sh` の定数。環境変数で上書きできない（固定が契約）。
@@ -70,7 +70,7 @@
 計画の決定（強化版 1 回 15 分・$15 程度まで）に沿って、確認用データの比較から次を選んだ。
 
 - own-security を毎回: 深掘りの閾値の揺れは自前観点では問題にならない（確信度で捨てない設計）。v2 案の「公式 `/security-review` を 2 回実行して和集合」は、own-security への置き換えで不要になった。
-- own-review × Fable 5.1: モデル起因の誤読（誤判定の約 1 割、計画 1-2）への対策として、同じ観点を別モデルで読む 2 人目の Claude。
+- own-review × Fable 5.2: モデル起因の誤読（誤判定の約 1 割、計画 1-2）への対策として、同じ観点を別モデルで読む 2 人目の Claude。
 - Codex × Astra: 2 人目の Codex。P1 で止める力は Sol より弱いが、見逃しを拾う側に和集合で足す。
 - 推奨表示（強制ではない）: `--deep` を回していないとき、差分が escalation-rules の `max_files` / `max_added` を超えた、BLOCK 相当の指摘がある、昇格ルールの path（A）に当たる、のどれかで `gate.py summary` と `record-gate.sh` が推奨を出し、SKILL.md がレポートに書かせる。
 
