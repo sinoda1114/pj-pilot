@@ -12,7 +12,7 @@
 #
 # 出力: JSON 1 行を stdout に出す。
 #   {"escalate":true|false,"reasons":[...],"secret_paths":[...],"files":N,"added":N,"base":"...","size_skipped":true|false}
-# 終了コード: 0 = 判定完了（escalate の真偽は JSON で見る）、2 = git 取得失敗
+# 終了コード: 0 = 判定完了（escalate の真偽は JSON で見る）、2 = git 取得失敗、またはルールの不正
 #
 # bash 3.2（macOS 既定）で動く。連想配列・mapfile は使わない。
 set -uo pipefail
@@ -135,15 +135,28 @@ read_rules() {
         [ -n "$hit" ] && add_reason "B:content:$(trunc_chars "$hit")"
         ;;
       secret)
+        # 共通ルールとプロジェクトのルールの一致は分けて持つ。secret_exempt は共通ルールの一致にだけ効かせ、
+        # プロジェクトが secret で明示したもの（外部へ送らない指定）は除外で消さない
         hit="$(printf '%s\n' "$files" | grep -iE -- "$pat" || true)"
-        [ -n "$hit" ] && secret_paths="$secret_paths
+        if [ -n "$hit" ]; then
+          if [ "$f" = "$rules" ]; then
+            secret_paths="$secret_paths
 $hit"
+          else
+            local_secret_paths="$local_secret_paths
+$hit"
+          fi
+        fi
         ;;
       secret_exempt)
         # 共通ルール（~/.claude 側）に書いたものだけ効かせる。プロジェクトのルールはレビュー対象の木にあり、
         # PR が自分で書き足せるため、そこからは秘密情報の判定を外させない（足す方向の secret だけ受ける）
-        [ "$f" = "$rules" ] && secret_exempts="$secret_exempts
+        if [ "$f" = "$rules" ]; then
+          secret_exempts="$secret_exempts
 $pat"
+        else
+          echo "WARN: プロジェクトのルール（${f}）の secret_exempt は無視します（共通ルールにだけ書けます）" >&2
+        fi
         ;;
       max_files) max_files="$pat" ;;
       max_added) max_added="$pat" ;;
@@ -157,16 +170,28 @@ $pat"
 # reasons に入りレポートと外部モデルへ流出する（SKILL.md は「ファイル名だけ」と規定）。
 secret_only=1
 secret_exempts=""
+local_secret_paths=""
 read_rules "$rules"
 read_rules "$local_rules"
 secret_only=0
-# secret に一致したパスのうち、secret_exempt（共通ルールのみ）に一致するものを外す
+# 共通ルールの secret に一致したパスのうち、secret_exempt（共通ルールのみ）に一致するものを外す。
+# プロジェクトのルールの secret 一致は除外の後に足す（プロジェクトの明示が共通の除外より優先）
+# grep の終了コード 2 以上（パターンが不正）を「一致なし」と取り違えると、secret_paths が空になり
+# 秘密情報が全部外れて外部モデルへ送られる。その場合は判定せずに止める（run-reviews.sh は記録させない）
 while IFS= read -r ex; do
   [ -n "$ex" ] || continue
-  secret_paths="$(printf '%s\n' "$secret_paths" | grep -viE -- "$ex" || true)"
+  filtered="$(printf '%s\n' "$secret_paths" | grep -viE -- "$ex")"; rc=$?
+  if [ $rc -gt 1 ]; then
+    # stdout は呼び出し側が失敗時に捨てるので、status.txt に残る stderr にも出す
+    echo "ERROR: secret_exempt のパターンが不正です: ${ex}" >&2
+    echo '{"error":"secret_exempt のパターンが不正です（escalation-rules.txt を確認してください）"}'
+    exit 2
+  fi
+  secret_paths="$filtered"
 done <<EXEOF
 $secret_exempts
 EXEOF
+secret_paths="$(printf '%s\n%s\n' "$secret_paths" "$local_secret_paths" | awk 'NF && !seen[$0]++')"
 
 content_lines="$added_lines"
 if [ -n "$(printf '%s' "$secret_paths" | tr -d '[:space:]')" ]; then
