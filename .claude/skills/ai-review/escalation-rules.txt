@@ -51,6 +51,16 @@ secret  (^|/)\.env(\..*)?$
 secret  \.(pem|key|p12|pfx|crt|cer|cert|jks|keystore)$
 secret  (^|/)(id_rsa|id_ed25519|id_ecdsa)(\.pub)?$
 secret  (^|/)(secrets?|credentials?)\.(json|ya?ml|toml)$
+# secret_exempt: secret に一致したパスのうち、これに一致するものは秘密情報から外す（Codex へ送ってよい）。
+#   この共通ルールにだけ書ける。プロジェクトの escalation-rules.local.txt に書いても無視する
+#   （レビュー対象の木にあり、PR がガードを外せてしまうため）。
+# .env のテンプレート（.env.example / .env.sample / .env.template / .env.dist、.env.local.example など）は
+# 値を空かダミーで置く雛形で、リポジトリに入れて共有する前提のファイル。秘密情報として扱うと、
+# 鍵の名前を足しただけの差分で Codex が止まり、二重チェックが欠ける（2026-11-13、PR の .env.example で発生）。
+# 末尾が雛形の語で終わるものだけ外す。.env / .env.local / .env.production / .env.example.local は秘密情報のまま。
+# テンプレートは上の path ルールで高リスク（昇格）の判定には残る。誤って本物の値を書いた場合は、
+# own-review / own-security（Claude 側）が拾う。
+secret_exempt  (^|/)\.env(\.[^/]*)?\.(example|sample|template|dist)$
 
 # ---- C. 規模 ----
 max_files  20
