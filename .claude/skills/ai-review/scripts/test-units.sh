@@ -318,5 +318,23 @@ grep -q '一時ファイルを作れない' "$RR" && ok "一時ファイルを�
 # Windows でない環境では、C:/ の形は（c: という名前のディレクトリの下の）相対パスのまま扱う
 mkdir -p "$T/winpath-only"; printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = --git-common-dir ] && { echo "C:/repo/.git"; exit 0; }; done\nexec "%s" "$@"\n' "$realgit16" > "$T/winpath-only/git"; chmod +x "$T/winpath-only/git"; printf '#!/bin/sh\necho Linux\n' > "$T/winpath-only/uname"; chmod +x "$T/winpath-only/uname"   # Windows でない環境のふり（Windows の上でも同じ結果になる）
 ( PATH="$T/winpath-only:$PATH"; . "$here/reports-guard.sh"; [ "$(abs_git_path "$T/r16a" --git-common-dir)" != "C:/repo/.git" ] ) && ok "Windows でなければ C:/ の形を絶対パスとみなさない" || ng "Windows でないのに C:/ を絶対パスとみなした"
+echo "17. escalation-check.sh の秘密情報の判定（.env のテンプレートは外す）"
+ESC="$here/escalation-check.sh"
+sp17(){ python3 -I -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(d["secret_paths"]))'; }
+r17="$T/r17"; mkdir -p "$r17" && ( cd "$r17" && git init -q -b main && echo x > a.txt && G add . && G commit -qm init && git checkout -qb feat ) >/dev/null 2>&1
+( cd "$r17" && mkdir -p config deep && for f in .env.example .env.sample .env.template .env.dist config/.env.local.example \
+    .env .env.local .env.production .env.example.local .env.examples deep/.env; do echo 'K=' > "$f"; done && G add -f . && G commit -qm envs ) >/dev/null 2>&1
+out17="$(cd "$r17" && bash "$ESC" --base main 2>/dev/null)"
+sec17="$(printf '%s' "$out17" | sp17 2>/dev/null)"
+bad=""; for f in .env.example .env.sample .env.template .env.dist config/.env.local.example; do printf '%s\n' "$sec17" | grep -qxF -- "$f" && bad="$bad $f"; done
+[ -n "$out17" ] && [ -z "$bad" ] && ok "テンプレート（.env.example / .sample / .template / .dist）は秘密情報にしない" || ng "テンプレートを秘密情報にした:$bad / $out17"
+miss=""; for f in .env .env.local .env.production .env.example.local .env.examples deep/.env; do printf '%s\n' "$sec17" | grep -qxF -- "$f" || miss="$miss $f"; done
+[ -n "$out17" ] && [ -z "$miss" ] && ok "本物の .env / .env.local / .env.production などは引き続き秘密情報にする" || ng "秘密情報から漏れた:$miss / $out17"
+printf '%s' "$out17" | grep -q 'A:path:[^"]*\.env\.example' && ok ".env.example は秘密情報から外しても、高リスクのパス（昇格）の判定には残す" || ng "昇格の判定から外れた: $out17"
+# プロジェクトのルール（レビュー対象の木にある）からは除外を足せない。足せると、PR がガードを外せてしまう
+mkdir -p "$r17/.ai-review"; printf 'secret_exempt .*\n' > "$r17/.ai-review/escalation-rules.local.txt"
+sec17b="$(cd "$r17" && bash "$ESC" --base main 2>/dev/null | sp17 2>/dev/null)"
+printf '%s\n' "$sec17b" | grep -qxF .env && printf '%s\n' "$sec17b" | grep -qxF .env.local && ok "プロジェクトのルールに secret_exempt を書いても効かない" || ng "プロジェクトのルールで秘密情報を外せた: $sec17b"
+rm -rf "$r17/.ai-review"
 echo "== PASS $pass / FAIL $fail =="
 [ $fail -eq 0 ]

@@ -121,8 +121,8 @@ read_rules() {
     kind="${line%%[[:space:]]*}"
     pat="${line#*[[:space:]]}"
     pat="$(printf '%s' "$pat" | sed 's/^[[:space:]]*//')"
-    if [ "${secret_only:-0}" = "1" ] && [ "$kind" != "secret" ]; then continue; fi
-    if [ "${secret_only:-0}" = "0" ] && [ "$kind" = "secret" ]; then continue; fi
+    if [ "${secret_only:-0}" = "1" ] && [ "$kind" != "secret" ] && [ "$kind" != "secret_exempt" ]; then continue; fi
+    if [ "${secret_only:-0}" = "0" ] && { [ "$kind" = "secret" ] || [ "$kind" = "secret_exempt" ]; }; then continue; fi
     case "$kind" in
       path)
         hit="$(printf '%s\n' "$files" | grep -iE -m1 -- "$pat" || true)"
@@ -139,6 +139,12 @@ read_rules() {
         [ -n "$hit" ] && secret_paths="$secret_paths
 $hit"
         ;;
+      secret_exempt)
+        # 共通ルール（~/.claude 側）に書いたものだけ効かせる。プロジェクトのルールはレビュー対象の木にあり、
+        # PR が自分で書き足せるため、そこからは秘密情報の判定を外させない（足す方向の secret だけ受ける）
+        [ "$f" = "$rules" ] && secret_exempts="$secret_exempts
+$pat"
+        ;;
       max_files) max_files="$pat" ;;
       max_added) max_added="$pat" ;;
     esac
@@ -150,9 +156,17 @@ $hit"
 # こうしないと、tracked な .env の行が content ルールに一致したとき、その本文が
 # reasons に入りレポートと外部モデルへ流出する（SKILL.md は「ファイル名だけ」と規定）。
 secret_only=1
+secret_exempts=""
 read_rules "$rules"
 read_rules "$local_rules"
 secret_only=0
+# secret に一致したパスのうち、secret_exempt（共通ルールのみ）に一致するものを外す
+while IFS= read -r ex; do
+  [ -n "$ex" ] || continue
+  secret_paths="$(printf '%s\n' "$secret_paths" | grep -viE -- "$ex" || true)"
+done <<EXEOF
+$secret_exempts
+EXEOF
 
 content_lines="$added_lines"
 if [ -n "$(printf '%s' "$secret_paths" | tr -d '[:space:]')" ]; then

@@ -96,7 +96,7 @@ ts="$(date +%Y%m%d-%H%M%S)"; run=".review-reports/run-$ts"
 ```
 §3.3 の実行後に `cat "$run/escalation.json"` で判定を読む。
 - `error` があれば内容を伝えて中断。
-- `secret_paths` が空でなければ、`run-reviews.sh` が自分で Codex を起動しない（外部モデルに秘密情報を送らない。`UNAVAILABLE codex-review` として未取得の項目になる）。`--no-codex` を付けても同じく未取得の項目になる。ファイル名だけレポートに載せる。
+- `secret_paths` が空でなければ、`run-reviews.sh` が自分で Codex を起動しない（外部モデルに秘密情報を送らない。`UNAVAILABLE codex-review` として未取得の項目になる）。`--no-codex` を付けても同じく未取得の項目になる。ファイル名だけレポートに載せる。`.env` のテンプレート（`.env.example` / `.sample` / `.template` / `.dist`）は、共通ルールの `secret_exempt` で秘密情報から外す（高リスクのパスの判定には残る）。`secret_exempt` はプロジェクトの `escalation-rules.local.txt` では効かない。
 - `escalate` と `reasons` を保持する（§3.6 で使う）。
 
 ### 3.3 レビュアーを並列起動（ブラインド）
