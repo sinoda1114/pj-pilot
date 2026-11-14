@@ -318,5 +318,44 @@ grep -q '一時ファイルを作れない' "$RR" && ok "一時ファイルを�
 # Windows でない環境では、C:/ の形は（c: という名前のディレクトリの下の）相対パスのまま扱う
 mkdir -p "$T/winpath-only"; printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = --git-common-dir ] && { echo "C:/repo/.git"; exit 0; }; done\nexec "%s" "$@"\n' "$realgit16" > "$T/winpath-only/git"; chmod +x "$T/winpath-only/git"; printf '#!/bin/sh\necho Linux\n' > "$T/winpath-only/uname"; chmod +x "$T/winpath-only/uname"   # Windows でない環境のふり（Windows の上でも同じ結果になる）
 ( PATH="$T/winpath-only:$PATH"; . "$here/reports-guard.sh"; [ "$(abs_git_path "$T/r16a" --git-common-dir)" != "C:/repo/.git" ] ) && ok "Windows でなければ C:/ の形を絶対パスとみなさない" || ng "Windows でないのに C:/ を絶対パスとみなした"
+echo "17. escalation-check.sh の秘密情報の判定（.env のテンプレートは外す）"
+ESC="$here/escalation-check.sh"
+sp17(){ python3 -I -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(d["secret_paths"]))'; }
+r17="$T/r17"; mkdir -p "$r17" && ( cd "$r17" && git init -q -b main && echo x > a.txt && G add . && G commit -qm init && git checkout -qb feat ) >/dev/null 2>&1
+( cd "$r17" && mkdir -p config deep && for f in .env.example .env.sample .env.template .env.dist config/.env.local.example \
+    .env .env.local .env.production .env.example.local .env.examples deep/.env; do echo 'K=' > "$f"; done && G add -f . && G commit -qm envs ) >/dev/null 2>&1
+out17="$(cd "$r17" && bash "$ESC" --base main 2>/dev/null)"
+sec17="$(printf '%s' "$out17" | sp17 2>/dev/null)"
+bad=""; for f in .env.example .env.sample .env.template .env.dist config/.env.local.example; do printf '%s\n' "$sec17" | grep -qxF -- "$f" && bad="$bad $f"; done
+printf '%s' "$out17" | grep -q '"secret_paths"' && [ -z "$bad" ] && ok "テンプレート（.env.example / .sample / .template / .dist）は秘密情報にしない" || ng "テンプレートを秘密情報にした:$bad / $out17"
+miss=""; for f in .env .env.local .env.production .env.example.local .env.examples deep/.env; do printf '%s\n' "$sec17" | grep -qxF -- "$f" || miss="$miss $f"; done
+[ -n "$out17" ] && [ -z "$miss" ] && ok "本物の .env / .env.local / .env.production などは引き続き秘密情報にする" || ng "秘密情報から漏れた:$miss / $out17"
+printf '%s' "$out17" | grep -qE 'A:path:[^"]*\.env(\.[^/"]*)?\.(example|sample|template|dist)"' && ok ".env のテンプレートは秘密情報から外しても、高リスクのパス（昇格）の判定には残す" || ng "昇格の判定から外れた: $out17"
+# プロジェクトのルール（レビュー対象の木にある）からは除外を足せない。足せると、PR がガードを外せてしまう
+mkdir -p "$r17/.ai-review"; printf 'secret_exempt .*\n' > "$r17/.ai-review/escalation-rules.local.txt"
+sec17b="$(cd "$r17" && bash "$ESC" --base main 2>/dev/null | sp17 2>/dev/null)"
+printf '%s\n' "$sec17b" | grep -qxF .env && printf '%s\n' "$sec17b" | grep -qxF .env.local && ok "プロジェクトのルールに secret_exempt を書いても効かない" || ng "プロジェクトのルールで秘密情報を外せた: $sec17b"
+# プロジェクトが secret でテンプレートを明示したら、共通の除外より優先する（外部へ送らない指定を守る）
+printf 'secret (^|/)\\.env\\.sample$\n' > "$r17/.ai-review/escalation-rules.local.txt"
+sec17c="$(cd "$r17" && bash "$ESC" --base main 2>/dev/null | sp17 2>/dev/null)"
+printf '%s\n' "$sec17c" | grep -qxF .env.sample && ! printf '%s\n' "$sec17c" | grep -qxF .env.example && ok "プロジェクトの secret で明示したテンプレートは秘密情報のまま（共通の除外より優先）" || ng "プロジェクトの secret 指定が共通の除外で消えた: $sec17c"
+rm -rf "$r17/.ai-review"
+# 共通ルールの secret_exempt が正規表現として壊れていたら、秘密情報を全部消さずに止める
+bad17="$T/bad17-rules.txt"; { grep -v '^secret_exempt' "$here/../escalation-rules.txt"; printf 'secret_exempt (^|/\\.env\\.example$\n'; } > "$bad17"
+out17e="$(cd "$r17" && bash "$ESC" --base main --rules "$bad17" 2>/dev/null)"; rc17e=$?
+err17e="$(cd "$r17" && bash "$ESC" --base main --rules "$bad17" 2>&1 >/dev/null)"
+[ $rc17e -eq 2 ] && printf '%s' "$out17e" | grep -q '"error"' && printf '%s' "$err17e" | grep -q 'secret_exempt' && ok "壊れた secret_exempt では秘密情報を消さずにエラーで止まり、stderr にも理由を出す" || ng "壊れた secret_exempt で止まらない: rc=$rc17e $out17e"
+# プロジェクトのルールに書いた secret_exempt は無視し、そのことを stderr に出す
+mkdir -p "$r17/.ai-review"; printf 'secret_exempt .*\n' > "$r17/.ai-review/escalation-rules.local.txt"
+err17f="$(cd "$r17" && bash "$ESC" --base main 2>&1 >/dev/null)"
+printf '%s' "$err17f" | grep -q 'secret_exempt' && ok "プロジェクトのルールの secret_exempt を無視したことを stderr に出す" || ng "無視したことが出ない: $err17f"
+rm -rf "$r17/.ai-review"
+# テンプレートを 1 つだけ変えた差分でも、高リスクのパス（昇格）の判定には残す
+for f in .env.sample .env.template .env.dist config/.env.local.example; do
+  r17d="$T/r17d-$(printf '%s' "$f" | tr '/.' '__')"; mkdir -p "$r17d"
+  ( cd "$r17d" && git init -q -b main && echo x > a.txt && G add . && G commit -qm init && git checkout -qb feat && mkdir -p config && echo 'K=' > "$f" && G add -f . && G commit -qm tpl ) >/dev/null 2>&1
+  out17d="$(cd "$r17d" && bash "$ESC" --base main 2>/dev/null)"
+  printf '%s' "$out17d" | grep -q '"escalate":true' && printf '%s' "$out17d" | grep -qF "A:path:$f" && ok "$f だけの差分でも昇格する" || ng "$f だけの差分で昇格しない: $out17d"
+done
 echo "== PASS $pass / FAIL $fail =="
 [ $fail -eq 0 ]
