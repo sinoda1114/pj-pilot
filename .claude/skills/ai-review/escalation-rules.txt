@@ -5,6 +5,7 @@
 #   path     変更ファイルのパス（git diff --name-only）に対する ERE。大文字小文字無視
 #   content  追加行（git diff の + 行、先頭 + を除いた本文）に対する ERE。大文字小文字無視
 #   secret   このパスが差分に含まれたら Codex（外部モデル）へ送らず警告する。大文字小文字無視
+#   secret_exempt  共通ルールの secret の一致から外すパス（この共通ルールにだけ書ける）。大文字小文字無視
 #   max_files   変更ファイル数の上限（超えたら昇格）
 #   max_added   追加行数の上限（超えたら昇格）
 #
@@ -24,7 +25,7 @@ path  (^|/)(middleware|rbac|acl|permission|policy|guard|interceptor)s?(/|\.|-|_|
 path  ^\.github/workflows/
 path  (^|/)Dockerfile
 path  (^|/)docker-compose.*\.ya?ml$
-path  (^|/)\.env\.example$
+path  (^|/)\.env(\.[^/]*)?\.(example|sample|template|dist)$
 path  (^|/)(package|composer)\.json$
 path  (^|/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|poetry\.lock|go\.sum|Gemfile\.lock)$
 path  (^|/)(requirements[^/]*\.txt|pyproject\.toml|go\.mod|Cargo\.toml|Gemfile)$
@@ -51,6 +52,18 @@ secret  (^|/)\.env(\..*)?$
 secret  \.(pem|key|p12|pfx|crt|cer|cert|jks|keystore)$
 secret  (^|/)(id_rsa|id_ed25519|id_ecdsa)(\.pub)?$
 secret  (^|/)(secrets?|credentials?)\.(json|ya?ml|toml)$
+# secret_exempt: secret に一致したパスのうち、これに一致するものは秘密情報から外す（Codex へ送ってよい）。
+#   この共通ルールにだけ書ける。プロジェクトの escalation-rules.local.txt に書いても無視する
+#   （レビュー対象の木にあり、PR がガードを外せてしまうため）。
+# .env のテンプレート（.env.example / .env.sample / .env.template / .env.dist、.env.local.example など）は
+# 値を空かダミーで置く雛形で、リポジトリに入れて共有する前提のファイル。秘密情報として扱うと、
+# 鍵の名前を足しただけの差分で Codex が止まり、二重チェックが欠ける（2026-11-13、PR の .env.example で発生）。
+# 末尾が雛形の語で終わるものだけ外す。.env / .env.local / .env.production / .env.example.local は秘密情報のまま。
+# テンプレートは上の path ルールで高リスク（昇格）の判定には残る。誤って本物の値を書いた場合は、
+# own-review / own-security（Claude 側）が拾う。
+# 除外は共通ルールの secret の一致にだけ効く。プロジェクトの escalation-rules.local.txt に secret で
+# テンプレートを明示した場合（例: secret (^|/)\.env\.sample$）は、除外より優先して秘密情報のまま扱う。
+secret_exempt  (^|/)\.env(\.[^/]*)?\.(example|sample|template|dist)$
 
 # ---- C. 規模 ----
 max_files  20
