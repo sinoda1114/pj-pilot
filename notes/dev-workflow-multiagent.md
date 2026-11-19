@@ -68,12 +68,15 @@ git worktree remove ../pj-pilot-<topic>   # マージ後に撤去
     main の自動デプロイを止め（二重デプロイ防止）、この節を書き換える。
 - 本番URLは ci-standard の `monitor-urls.txt` に登録する（30分ごとの死活監視・障害Issue自動起票）。
 - **手動デプロイ（`vercel --prod` 等の CLI）は原則禁止**（本番状態の二重化を防ぐ）。
+  例外は初回構築（`docs/DEPLOY_RUNBOOK.md` の Step 6）だけ。運用開始後は main へのマージで出す。
   緊急時は番人が Vercel ダッシュボードの Instant Rollback で直前の正常なデプロイに戻し、必ず記録。
   Instant Rollback をすると Vercel は Production ドメインの自動割り当てを止めるので、
   そのままでは後の main へのマージが本番に反映されない。配信を戻した後は次の順で main と本番をそろえる:
+  ロールバック中は、番人が revert 以外の PR をマージしない（本番に出す対象を 1 つに保つ）。
   1. 原因コミットを `git revert` する PR を出してマージする。
-  2. そのコミットの Production デプロイが成功したことを確かめる。
-  3. ダッシュボードで「Undo Rollback」を実行するか、そのデプロイを Promote して、自動割り当てを戻す。
+  2. main の最新コミット（revert のコミット）の Production デプロイが成功し、CI が緑であることを確かめる。
+  3. ダッシュボードでそのデプロイを Promote して、自動割り当てを戻す。
+     「Undo Rollback」は使わない（ロールバック元＝原因コミットのデプロイが本番に戻るため）。
   4. 本番 URL が main の最新コミットのデプロイを指していることを確かめる。
 - **PR ごとに自動でプレビュー URL が発行**される。→ **機能別の動作確認はプレビュー URL で**。本番は main だけ。
 - 環境変数は Vercel ダッシュボードが正本（`.env.local` はローカル dev 用、リポに出さない）。
