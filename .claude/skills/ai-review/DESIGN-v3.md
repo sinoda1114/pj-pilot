@@ -54,10 +54,10 @@
 | 名前 | 中身 | モデル / effort | 起動 |
 |---|---|---|---|
 | own-review | `prompts/own-review.md` | claude-opus-5-5 / high | 毎回 |
-| codex-review | `codex exec review`（純正） | gpt-6.1-sol / high | 毎回 |
+| codex-review | `codex exec review`（純正） | gpt-6.2-sol / high | 毎回 |
 | own-security | `prompts/own-security.md` | claude-opus-5-5 / high | 昇格・`--security`・`--deep` |
 | own-review-fable | `prompts/own-review.md` | claude-fable-5-2 / high | `--deep` |
-| codex-astra | `codex exec review`（純正） | gpt-6-astra / high | `--deep` |
+| codex-astra | `codex exec review`（純正） | gpt-6.2-astra / high | `--deep` |
 
 - モデルと effort は `run-reviews.sh` の定数。環境変数で上書きできない（固定が契約）。
 - 自前観点はスラッシュコマンドとして入れず、`run-reviews.sh` が frontmatter を外し、「対象: $ARGUMENTS（…）」の行を具体的な対象（branch: `比較範囲: <base>...HEAD の差分`、local: `対象: 未コミットの変更（ステージ済み・未ステージ・未追跡）`）に置き換えて `claude -p` に渡す。置き換える行が無ければ起動しない（黙って `$ARGUMENTS` のまま渡さない）。実際に渡した本文は `<名前>.prompt.md` に残る。
@@ -155,6 +155,17 @@
 
 - Codex CLI 0.155.1 では gpt-6.1-sol が ChatGPT アカウントで拒否されるため、0.159.1 以上が必要。
 - Codex CLI 0.159 から `codex exec review` の本文が stdout に出なくなったが、`run-reviews.sh` は `-o` で最終メッセージを受けているため影響なし。
+
+## 追記 2026-11-22: Codex 側のモデルを GPT-6.2 に揃える
+
+| 項目 | 変更前 | 変更後 | 根拠（OWASP 110 件、純正 `codex exec review`、各 2 回、2026-11-18） |
+|---|---|---|---|
+| codex-review | gpt-6.1-sol | gpt-6.2-sol | 2 回の平均 0.973（0.964 / 0.982）。実在のオープンソースの脆弱性 20 件は 2 回とも全件検出、誤検知 0 |
+| codex-astra（`--deep`） | gpt-6-astra | gpt-6.2-astra | 2 回の平均 0.955（1.000 / 0.909）。実在の 20 件は 2 回とも全件検出、誤検知 0 |
+
+- gpt-6.2-* は Codex CLI 0.169.0 以上が要る（それより前の版では `model_not_found`）。0.171.0 で `codex exec review` と `-o` が動くことを確かめた。
+- Codex 側の 2 本は同じ世代に揃えて、同時に上げる。
+- 版の事前確認はしない（別のプロセスの打ち切り・後始末が要るため）。落ちたときにエラー出力の末尾に `model_not_found` か `model is not supported` の語があれば、要る版と、版が新しい場合の原因（アカウントのモデルの権限）を `status.txt` に書き添える。出し方は版で違い、レビュー中のログにも同じ語が出うるので、原因とは断定しない。`codex update` は 0.159.1 にもあることを確かめた。
 
 ## 10. 差分レビュー（2026-10-12 追加）
 

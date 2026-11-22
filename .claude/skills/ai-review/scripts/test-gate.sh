@@ -73,7 +73,7 @@ grep -q 'Bash(git:\*)\|Bash(git grep' .review-reports/r1/own-review.md && ng "gi
 grep -q -- "Bash(git \*--contents\*)" .review-reports/r1/own-review.md && ok "git blame --contents（リポジトリ外の読み取り）を拒む" || ng "--contents の拒否"
 grep -q -- "--setting-sources  --safe-mode --strict-mcp-config" .review-reports/r1/own-review.md && ok "ユーザー・プロジェクトの設定（allow・フック・CLAUDE.md）と MCP を読ませない" || ng "設定の隔離"
 grep -q -- "--disallowedTools .*Bash(git \*--output\*)" .review-reports/r1/own-review.md && ok "git の --output（ファイル書き込み）を位置に関係なく拒む" || ng "--output の拒否"
-grep -q -- '-m gpt-6.1-sol -c model_reasoning_effort="high"' .review-reports/r1/codex-review.md && ok "codex-review は gpt-6.1-sol / high の純正 review（独自の指示なし）" || ng "codex のモデル"
+grep -q -- '-m gpt-6.2-sol -c model_reasoning_effort="high"' .review-reports/r1/codex-review.md && ok "codex-review は gpt-6.2-sol / high の純正 review（独自の指示なし）" || ng "codex のモデル"
 grep -q -- 'exec review --base origin/main --skip-git-repo-check' .review-reports/r1/codex-review.md && ok "Codex に比較元を渡す" || ng "codex の比較元"
 grep -q -- '-c notify=\[\] -c mcp_servers={}' .review-reports/r1/codex-review.md && ok "Codex のプロジェクト設定（notify・MCP）を打ち消す" || ng "codex の設定の打ち消し"
 grep -q -- '-c project_doc_max_bytes=0' .review-reports/r1/codex-review.md && ok "Codex にレビュー対象の AGENTS.md を読ませない（指示で指摘を消されないように）" || ng "AGENTS.md を読ませない設定が無い"
@@ -109,7 +109,7 @@ for nm in own-review codex-review own-security own-review-fable codex-astra; do
 done
 [ -z "$bad" ] && ok "5 本とも起動・完了（own-review / codex-review / own-security / own-review-fable / codex-astra）" || ng "起動・完了していない:$bad"
 grep -q -- '--model claude-fable-5-2 --effort high' .review-reports/r3/own-review-fable.md && ok "2 人目の Claude は claude-fable-5-2 / high" || ng "fable のモデル"
-grep -q -- '-m gpt-6-astra -c model_reasoning_effort="high"' .review-reports/r3/codex-astra.md && ok "2 人目の Codex は gpt-6-astra / high" || ng "astra のモデル"
+grep -q -- '-m gpt-6.2-astra -c model_reasoning_effort="high"' .review-reports/r3/codex-astra.md && ok "2 人目の Codex は gpt-6.2-astra / high" || ng "astra のモデル"
 grep -q '^# セキュリティの深掘りレビュー' .review-reports/r3/own-security.prompt.md && ok "own-security は深掘りのプロンプト" || ng "own-security のプロンプト"
 [ -f .review-reports/r3/deep.flag ] && ok "deep の印を残す" || ng "deep.flag なし"
 AI_REVIEW_DRY_RUN=1 bash "$RR" --out .review-reports/rx --deep --security >/dev/null 2>&1 && ng "--deep と --security を併用できた" || ok "--deep と --security は併用しない"
@@ -1105,6 +1105,26 @@ AI_REVIEW_DRY_FAIL="codex-review:other" run --out .review-reports/c3
 grep -q '混み合い' .review-reports/c3/status.txt && ng "混み合い以外の失敗で待った" || ok "混み合い以外の失敗では待たない"
 AI_REVIEW_DRY_FAIL="own-review:capacity" run --out .review-reports/c4
 grep -q '混み合い' .review-reports/c4/status.txt && ng "Claude 側の失敗を Codex の混み合いとして扱った" || ok "Claude 側の失敗は、この経路の対象にしない"
+# gpt-6.2-* を古い Codex CLI で呼ぶと model_not_found で落ちる。失敗の行に、要る版と更新の仕方を書き添える
+AI_REVIEW_DRY_FAIL="codex-review:model" run --out .review-reports/m1; rc=$?
+[ $rc -eq 1 ] && ok "model_not_found でも、ほかの失敗と同じく終了コード 1 を返す" || ng "m1 の終了コード: $rc"
+grep -q '^FAILED codex-review (非ゼロ終了。codex-review.err 参照。途中出力は codex-review.partial.md。エラー出力にモデルを使えないことを示す語（model_not_found か model is not supported）がある: .*gpt-6.2-\* は Codex CLI 0.169.0 以上が要る' .review-reports/m1/status.txt && ok "model_not_found なら、Codex CLI 0.169.0 以上が要ると書く" || ng "m1: $(grep codex-review .review-reports/m1/status.txt)"
+grep -q '混み合い' .review-reports/m1/status.txt && ng "model_not_found で回し直した" || ok "model_not_found では回し直さない"
+AI_REVIEW_DRY_FAIL="codex-review:other" run --out .review-reports/m2
+grep -q '^FAILED codex-review (非ゼロ終了' .review-reports/m2/status.txt && ! grep -q 'モデルを使えないことを示す語' .review-reports/m2/status.txt && ok "ほかの失敗には版の案内を付けない" || ng "m2: $(grep codex-review .review-reports/m2/status.txt)"
+grep -q 'アカウントでそのモデルを使えるか' .review-reports/m1/status.txt && ok "版が新しい場合の原因（モデルの権限）も書く" || ng "m1: $(grep codex-review .review-reports/m1/status.txt)"
+AI_REVIEW_DRY_FAIL="own-review:model" run --out .review-reports/m3
+grep -q '^FAILED own-review (非ゼロ終了' .review-reports/m3/status.txt && ! grep -q 'モデルを使えないことを示す語' .review-reports/m3/status.txt && ok "版の案内は Codex のレビュアーだけ" || ng "m3: $(grep own-review .review-reports/m3/status.txt)"
+AI_REVIEW_DRY_FAIL="codex-review:modeltext" run --out .review-reports/m4
+grep -q '^FAILED codex-review (非ゼロ終了。.*モデルを使えないことを示す語' .review-reports/m4/status.txt && ok "平文のエラー文でも版の案内を付ける" || ng "m4: $(grep codex-review .review-reports/m4/status.txt)"
+AI_REVIEW_DRY_FAIL="codex-astra:model" run --out .review-reports/m7 --deep
+grep -q '^FAILED codex-astra (非ゼロ終了。.*モデルを使えないことを示す語' .review-reports/m7/status.txt && ok "--deep の codex-astra の失敗にも案内を付ける" || ng "m7: $(grep codex-astra .review-reports/m7/status.txt)"
+for k in modelplain modeljson; do
+  AI_REVIEW_DRY_FAIL="codex-review:$k" run --out .review-reports/m6
+  grep -q '^FAILED codex-review (非ゼロ終了。.*モデルを使えないことを示す語' .review-reports/m6/status.txt && ok "$k の形のエラーでも版の案内を付ける" || ng "$k: $(grep codex-review .review-reports/m6/status.txt)"
+done
+AI_REVIEW_DRY_FAIL="codex-review:modelcolor" run --out .review-reports/m5
+grep -q '^FAILED codex-review (非ゼロ終了。.*モデルを使えないことを示す語' .review-reports/m5/status.txt && ok "色付きのエラー行でも版の案内を付ける" || ng "m5: $(grep codex-review .review-reports/m5/status.txt)"
 unset AI_REVIEW_CAPACITY_WAIT
 
 echo "== PASS $pass / FAIL $fail =="

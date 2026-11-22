@@ -1,6 +1,6 @@
 ---
 name: ai-review
-description: Push 前の唯一の AI レビューゲート。同梱の自前観点（own-review、Opus 5.5）と Codex 純正 review（gpt-6.1-sol）をブラインドで並列起動し、指摘を和集合で突合して 3 段の結論（BLOCK / MUST-ADDRESS / PASS）を出し、Markdown/HTML レポートを .review-reports/ に保存する。高リスク差分はセキュリティの深掘り（own-security）を自動で追加起動し、--deep で 5 本に増やせる。MUST-ADDRESS は 1 件ずつ「直す」か「理由を記録して別のサブエージェントが検証」して片づける。Use when the user types /ai-review, or asks to "レビューして", "push 前に見て", "ブランチをレビュー", "未コミットをレビュー". Does NOT modify source code.
+description: Push 前の唯一の AI レビューゲート。同梱の自前観点（own-review、Opus 5.5）と Codex 純正 review（gpt-6.2-sol）をブラインドで並列起動し、指摘を和集合で突合して 3 段の結論（BLOCK / MUST-ADDRESS / PASS）を出し、Markdown/HTML レポートを .review-reports/ に保存する。高リスク差分はセキュリティの深掘り（own-security）を自動で追加起動し、--deep で 5 本に増やせる。MUST-ADDRESS は 1 件ずつ「直す」か「理由を記録して別のサブエージェントが検証」して片づける。Use when the user types /ai-review, or asks to "レビューして", "push 前に見て", "ブランチをレビュー", "未コミットをレビュー". Does NOT modify source code.
 metadata:
   author: sinoda
   version: 3.0.0
@@ -45,10 +45,10 @@ push 前の**唯一のゲート**。レビュー本体は書かない。同梱�
 | 名前（出力ファイル名） | 中身 | モデル / effort | いつ |
 |---|---|---|---|
 | `own-review` | `prompts/own-review.md` | claude-opus-5-5 / high | 毎回 |
-| `codex-review` | `codex exec review`（純正。独自の指示は渡さない） | gpt-6.1-sol / high | 毎回 |
+| `codex-review` | `codex exec review`（純正。独自の指示は渡さない） | gpt-6.2-sol / high | 毎回 |
 | `own-security` | `prompts/own-security.md` | claude-opus-5-5 / high | 昇格時（`--security`）と `--deep` |
 | `own-review-fable` | `prompts/own-review.md` | claude-fable-5-2 / high | `--deep` |
-| `codex-astra` | `codex exec review`（純正） | gpt-6-astra / high | `--deep` |
+| `codex-astra` | `codex exec review`（純正） | gpt-6.2-astra / high | `--deep` |
 
 Claude 側の道具は `Read,Grep,Glob,読み取り系の git サブコマンド（diff / show / log / status / ls-files / rev-parse / blame / merge-base / cat-file）,Task,Agent,TodoWrite` に限り、`--permission-mode dontAsk` でそれ以外（書き込み・ネットワーク・git 以外のコマンド）を拒否させる。`--setting-sources "" --safe-mode --strict-mcp-config` でユーザー・プロジェクトの設定（allow ルール・フック・CLAUDE.md）と MCP を読ませない（レビュー対象に入った `.claude/settings.json` のフックや、ユーザーの allow ルールで許可リストを迂回させないため）。パッケージのインストールやネットワークへのアクセスはしない（プロンプトにも書いてある）。Codex は read-only サンドボックス。
 
@@ -221,7 +221,7 @@ $SKILL/scripts/record-gate.sh --verdict <pass|must-address|block> --items "$run/
 ## 対象
 - Base: origin/main (merge-base abc1234) → HEAD def5678 / branch feat/xxx
 - 変更: N files, +A/-D
-- 実行: own-review (claude-opus-5-5/high, 1m30s) ‖ codex-review (gpt-6.1-sol/high, 1m20s) [‖ own-security ‖ own-review-fable ‖ codex-astra]
+- 実行: own-review (claude-opus-5-5/high, 1m30s) ‖ codex-review (gpt-6.2-sol/high, 1m20s) [‖ own-security ‖ own-review-fable ‖ codex-astra]
 - 判定表: 全ファイルあり / 再実行 1 回で補完 / 判定なし（要確認）: path/a, path/b
 - レビュー対象外: .env（秘密情報のため Codex 未送信）
 
@@ -311,6 +311,7 @@ git config --global core.hooksPath ~/.git-hooks
 | `TABLE-INCOMPLETE` | 再実行でも判定表が埋まらなかった。欠けたファイルは記録時に「判定なし（要確認）」の MUST-ADDRESS 項目になる。§3.9 で片づける（そのファイルを自分で読んで理由を書き、検証を通す） |
 | `record-gate.sh` が「〜の結論は … ですが、source に … を含む項目がありません」で止まる | そのレビュアーの BLOCK / MUST-ADDRESS の指摘を書き起こし忘れている。`items.json` に足して記録し直す |
 | `record-gate.sh` が「レビューした SHA と HEAD が違う」「reviewed_sha.review が見つからない」で止まる | 前者はレビュー中に HEAD が動いた。後者は `--report` の渡し忘れ。記録せず、前者は回し直し、後者は `--report` を付けて記録し直す |
+| `status.txt` の FAILED に「モデルを使えないことを示す語（model_not_found か model is not supported）がある」 | そのレビュアーだけが未取得。原因とは限らない（レビュー中のログに同じ語が出ることもある）ので、`.err` で確かめる。モデルを使えなかったのなら、Codex CLI が古い（gpt-6.2-* は 0.169.0 以上が要る）か、アカウントでそのモデルを使えない。`codex --version` が古ければ更新（`codex update`、npm 版は `npm install -g @openai/codex`）して回し直すよう案内する。ほかのレビュアーの結果はそのまま使い、二重化が欠けたことを結論に書く |
 | `codex` 未導入・失敗・タイムアウト | その旨を明記し Claude 側だけで続行。二重化できていないことを結論に書く |
 | `claude` 側が失敗・タイムアウト | 同様に Codex 側だけで続行 |
 | 全部失敗 | 下限が `block` になる。そのまま記録して中断 |
