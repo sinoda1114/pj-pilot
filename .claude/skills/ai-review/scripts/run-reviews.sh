@@ -21,10 +21,10 @@
 #
 # レビュアー（出力ファイル名 = 名前。DESIGN-v3.md §3）:
 #   own-review        prompts/own-review.md   × claude-opus-5-5 / high   （毎回）
-#   codex-review      codex exec review 純正  × gpt-6.1-sol     / high   （毎回。独自の指示は渡さない）
+#   codex-review      codex exec review 純正  × gpt-6.2-sol     / high   （毎回。独自の指示は渡さない）
 #   own-security      prompts/own-security.md × claude-opus-5-5 / high   （--security と --deep）
 #   own-review-fable  prompts/own-review.md   × claude-fable-5-2 / high  （--deep）
-#   codex-astra       codex exec review 純正  × gpt-6-astra     / high   （--deep）
+#   codex-astra       codex exec review 純正  × gpt-6.2-astra   / high   （--deep）
 #   モデル・effort は固定（環境変数で上書きできない。変えるならこのファイルを直す）。
 #   Opus 5.5 は CLI 2.1.280 以上が必要。既定 effort が medium なので --effort high を明示し続けること。
 #
@@ -40,7 +40,7 @@
 # 環境変数 AI_REVIEW_DRY_RUN=1 で実コマンドを起動せずダミー出力を書く（テスト用）。
 #   AI_REVIEW_DRY_TABLE_MISSING=1|once  自前観点のダミー出力から判定表の 1 行目を抜く（once は初回だけ）
 #   AI_REVIEW_DRY_VERDICT=PASS|MUST-ADDRESS|BLOCK  自前観点のダミー出力の結論
-#   AI_REVIEW_DRY_FAIL="<名前>:capacity|mention|other,..."  そのレビュアーを初回だけ失敗させる（capacity は Codex の混み合いの
+#   AI_REVIEW_DRY_FAIL="<名前>:capacity|model|modeltext|modelplain|modeljson|modelcolor|mention|other,..."  そのレビュアーを初回だけ失敗させる（capacity は Codex の混み合いの
 #     エラー行を出す。mention は「at capacity」という語を含むだけの別の失敗）
 #   AI_REVIEW_DRY_FAIL_RETRY=1|empty  回し直しも同じように失敗させる（empty は終了コード 0・空の出力）
 set -uo pipefail
@@ -48,9 +48,10 @@ set -uo pipefail
 CLAUDE_MODEL="claude-opus-5-5"
 CLAUDE_DEEP_MODEL="claude-fable-5-2"
 CLAUDE_EFFORT="high"
-CODEX_MODEL="gpt-6.1-sol"
-CODEX_DEEP_MODEL="gpt-6-astra"
+CODEX_MODEL="gpt-6.2-sol"
+CODEX_DEEP_MODEL="gpt-6.2-astra"
 CODEX_EFFORT="high"
+CODEX_MIN_VERSION="0.169.0"   # gpt-6.2-* に要る Codex CLI の版（失敗したときの案内に使う）
 # 自前観点に許す道具（読み取り + 読み取り系の git サブコマンドのみ）と、明示的に禁じる道具。
 # Bash(git:*) にしない: `git -c core.fsmonitor=<cmd> status` などで任意のコマンドを実行でき、
 # git config で共有の .git/config（ai-review.skip、core.hooksPath）も書き換えられる（2026-09-23 に実測）。
@@ -506,6 +507,11 @@ dry_fail() {
   : > "$out/$1.md"; printf '%s\0' sleep 0 > "$out/$1.cmd"
   case "$(dry_fail_mode "$1")" in
     capacity) echo "ERROR: Selected model is at capacity. Please try a different model." >> "$out/$1.err" ;;
+    modelplain) printf 'ERROR: model_not_found\n' >> "$out/$1.err" ;;
+    modeljson) printf 'ERROR: {\n  "error": {\n    "code": "model_not_found"\n  }\n}\n' >> "$out/$1.err" ;;
+    modelcolor) printf '\033[31mERROR:\033[0m {"error":{"code":"model_not_found"}}\n' >> "$out/$1.err" ;;
+    modeltext) echo "ERROR: The 'gpt-6.2-sol' model is not supported when using Codex with a ChatGPT account." >> "$out/$1.err" ;;
+    model) printf 'ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"No access to this model.","code":"model_not_found"}}\n' >> "$out/$1.err" ;;
     mention) printf 'note: the docs say "at capacity" sometimes\nERROR: dry run failure\n' >> "$out/$1.err" ;;
     *) echo "ERROR: dry run failure" >> "$out/$1.err" ;;
   esac
@@ -776,7 +782,15 @@ for n in $names; do
   elif is_failed "$n"; then
     # 途中まで出力があっても完成品ではない。突合に使わせない。
     [ -s "$out/$n.md" ] && { mv "$out/$n.md" "$out/$n.partial.md" 2>/dev/null || true; : > "$out/$n.md"; }
-    echo "FAILED $n (非ゼロ終了。$n.err 参照。途中出力は $n.partial.md)" >> "$status"; rc_all=1
+    # gpt-6.2-* を古い Codex CLI で呼ぶと model_not_found で落ちる。出し方（JSON・改行入り・平文・色付き）は版で
+    # 違うので、エラー出力の末尾のどこかにあれば書き添える。レビュー中のログに同じ語が出ることもあるので、
+    # 原因とは断定せず「語がある」という事実と、そうだった場合の手当てだけを書く
+    if case "$n" in codex-*) true ;; *) false ;; esac \
+      && tail -n 50 "$out/$n.err" 2>/dev/null | grep -iE 'model_not_found|model is not supported' >/dev/null; then
+      echo "FAILED $n (非ゼロ終了。$n.err 参照。途中出力は $n.partial.md。エラー出力にモデルを使えないことを示す語（model_not_found か model is not supported）がある: モデルを使えなかったのなら、gpt-6.2-* は Codex CLI $CODEX_MIN_VERSION 以上が要る。codex --version が古ければ更新し、新しければアカウントでそのモデルを使えるかを確かめる)" >> "$status"; rc_all=1
+    else
+      echo "FAILED $n (非ゼロ終了。$n.err 参照。途中出力は $n.partial.md)" >> "$status"; rc_all=1
+    fi
   elif case "$n" in codex-*) [ ! -f "$out/$n.used-o" ] ;; *) false ;; esac; then
     # Codex は -o の最終回答が正。stdout の進捗ログだけが残った状態を ok にしない。
     [ -s "$out/$n.md" ] && { mv "$out/$n.md" "$out/$n.partial.md" 2>/dev/null || true; : > "$out/$n.md"; }
